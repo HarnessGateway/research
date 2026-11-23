@@ -43,9 +43,10 @@ so a session is two folders, `mind` and `work`. Keep those and one session runs 
 images, each harness remembering its own part. `session.sh`
 
 **[5. Responses.](5-responses)** *How do I put every harness behind one API?*
-The two things of stage 3 became two programs, `install` and `run`: a **harness package**. And `run` got one
-job, in a schema that already existed: read an OpenAI Responses request, print Responses output. Three harnesses,
-one request, one kind of answer. `respond.sh`, and the three [packages](packages)
+The two things of stage 3 became two programs, `install` and `run`: a **harness package**. For the API I chose
+OpenAI Responses, because I needed the session kept on the server: a request names the response it continues,
+and the server holds the rest. So `run` got one job: read a Responses request, print Responses output. Three
+harnesses, one request, one kind of answer. `respond.sh`, and the three [packages](packages)
 
 **[6. Core.](6-core)** *What is the smallest platform that does all of that?*
 168 lines. A Responses request comes in, `model` names a harness and a provider, the package runs in the
@@ -64,7 +65,7 @@ it for a fourth. `build.py`, and the [fde](packages/fde) package
 | How a harness is installed, and how it is run (stage 3) | A harness package: `install` and `run` |
 | The container that is thrown away (stage 3) | The sandbox every turn runs in |
 | The home folder and the working folder (stage 4) | A session: `mind` and `work` |
-| One request and one answer for every harness (stage 5) | The OpenAI Responses API, unmodified |
+| One request and one answer for every harness, with the session kept server side (stage 5) | The OpenAI Responses API, unmodified |
 | `harness/provider/model` (stage 6) | The model line: the one field that says what runs a request |
 | The agent that builds packages (stage 7) | HG FDE, which ships with the platform |
 

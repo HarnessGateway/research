@@ -4,10 +4,24 @@ I could run any harness, safely, and carry on a session with any of them. But ea
 way and answered in its own format, and whatever called them had to know all of it. I wanted to ask every
 harness the same way and be answered the same way.
 
-Two things were already there. Stage 3 had found that a harness is two things: how it is installed and how it is
-run. And a schema for asking an agent to do something, and for what it did, already exists and is already
-spoken by every client: the OpenAI Responses API. So I did not invent anything. I made the two things two
-programs, and gave `run` one job: read a Responses request, and print Responses output.
+Stage 3 had found that a harness is two things: how it is installed and how it is run. Those became two
+programs. What was left to choose was the API in front of them.
+
+## Why OpenAI Responses
+
+Because I needed the session kept on the server. Stage 4's session is two folders, and they live where the
+harness runs, not with whoever is asking. A caller cannot carry them, and should not have to.
+
+Most model APIs are stateless: the caller holds the conversation and sends all of it again with every request.
+That cannot work here, because the conversation is not the session. The session is a harness's own memory and a
+folder of work, on a disk the caller never sees. I needed an API where the server keeps the state and a request
+only names what it continues.
+
+The OpenAI Responses API is that. A response is stored on the server under an id, and the next request says
+`previous_response_id`. That one field is stage 4's session: it names the turn to continue from, and the server
+finds the two folders. It also already had an item for everything stage 2 saw an agent do (run a command,
+change a file, think, speak), and every client already speaks it. So I did not invent anything. I gave `run`
+one job: read a Responses request, and print Responses output.
 
 That is a **harness package**.
 
