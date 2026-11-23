@@ -45,8 +45,10 @@ images, each harness remembering its own part. `session.sh`
 **[5. Responses.](5-responses)** *How do I put every harness behind one API?*
 The two things of stage 3 became two programs, `install` and `run`: a **harness package**. For the API I chose
 OpenAI Responses, because I needed the session kept on the server: a request names the response it continues,
-and the server holds the rest. So `run` got one job: read a Responses request, print Responses output. Three
-harnesses, one request, one kind of answer. `respond.sh`, and the three [packages](packages)
+and the server holds the rest. It also already had an output item for everything I had seen an agent do in
+stage 2: run a command, change a file, think, speak. So `run` got one job: read a Responses request, print
+Responses output. Three harnesses, one request, one kind of answer. `respond.sh`, and the three
+[packages](packages)
 
 **[6. Core.](6-core)** *What is the smallest platform that does all of that?*
 168 lines. A Responses request comes in, `model` names a harness and a provider, the package runs in the
