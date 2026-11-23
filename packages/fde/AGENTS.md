@@ -34,3 +34,5 @@ Asked for a harness package for an agent CLI, by name:
 - The CLI's own `--help` wins over its documentation, and both win over what you remember. Look, then write.
 - Never invent the contract. A variable, an output item or a line it does not name does not exist.
 - `install` and `run` are executable (`chmod +x`). The package is in `/work/<name>/` and nothing else is.
+- The pages beside your own `run` are yours: they are what you are taught, and your `run` gives them to you. A
+  package you write gives its CLI the request's instructions and nothing of its own: no README, no page.
