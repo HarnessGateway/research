@@ -2,6 +2,7 @@
 """run: one turn of Claude Code. It reads the Responses request, starts Claude Code headless, and prints what it
 does as Responses output: its words and its thinking as they arrive, each step it took as an output item, and the
 stream's last event, with the tokens the turn used."""
+import glob
 import json
 import os
 import signal
@@ -65,8 +66,12 @@ prompt = given if isinstance(given, str) else "\n\n".join(
 args = [os.path.join(HARNESS, "tools", "node_modules", ".bin", "claude"), "-p", "--output-format", "stream-json",
         "--verbose", "--include-partial-messages", "--dangerously-skip-permissions",
         "--system-prompt-snapshot", "off"]             # so that this request's instructions reach a resumed session
-if request.get("instructions"):
-    args += ["--append-system-prompt", request["instructions"]]
+# What the agent is told before the person speaks: what its package knows (any .md beside these two programs),
+# then this request's instructions.
+known = [open(path, encoding="utf-8").read() for path in sorted(glob.glob(os.path.join(HARNESS, "*.md")))]
+told = "\n\n".join(part for part in [*known, request.get("instructions")] if part)
+if told:
+    args += ["--append-system-prompt", told]
 if os.path.exists(SESSION):
     args += ["--resume", open(SESSION, encoding="utf-8").read()]
 model = os.environ["HG_MODEL"]
