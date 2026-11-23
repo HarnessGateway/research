@@ -7,7 +7,7 @@ POST /v1/responses with a `model` of harness/provider/model. The harness is a fo
 `install` and `run`; the provider is an entry of PROVIDERS, below. Each request is one turn: the package's `run`,
 given the request as a file, in a container that is thrown away, on a session's two folders that are kept. A
 request with `previous_response_id` runs on the same two folders, so the work carries on, whatever harness it
-names. Standard library only.
+names. GET / is the console of stage 8: a page that calls that one route. Standard library only.
 """
 import argparse
 import json
@@ -22,6 +22,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PACKAGES, DATA, IMAGE = HERE.parent / "packages", HERE / "data", "node:22"
+CONSOLE = HERE.parent / "8-console" / "console.html"
 # Where models are served: the base URL of each API a provider speaks, and the variable that holds its key.
 PROVIDERS = {"deepseek": {"key_env": "DEEPSEEK_API_KEY", "apis": {
     "anthropic": "https://api.deepseek.com/anthropic", "openai-responses": "https://api.deepseek.com/v1",
@@ -155,9 +156,15 @@ class Api(BaseHTTPRequestHandler):
             status = getattr(refusal, "status", 400)
             answer = {"error": {"message": str(refusal), "type": "invalid_request_error",
                                 "param": getattr(refusal, "param", None), "code": None}}
-        data = json.dumps(answer).encode()
+        self.answer(status, "application/json", json.dumps(answer).encode())
+
+    def do_GET(self):                                  # GET /: the console of stage 8, which calls the route above
+        found = self.path == "/" and CONSOLE.is_file()
+        self.answer(200 if found else 404, "text/html; charset=utf-8", CONSOLE.read_bytes() if found else b"Not Found")
+
+    def answer(self, status, kind, data):
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -169,5 +176,6 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8600)
     args = parser.parse_args()
     IMAGE = args.image
-    print(f"the core on http://127.0.0.1:{args.port}/v1: harnesses run in {IMAGE}, one request at a time")
+    print(f"the core on http://127.0.0.1:{args.port}/v1, its console on http://127.0.0.1:{args.port}/: "
+          f"harnesses run in {IMAGE}, one request at a time")
     HTTPServer(("127.0.0.1", args.port), Api).serve_forever()

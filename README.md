@@ -57,7 +57,7 @@ Responses output. Three harnesses, one request, one kind of answer. `respond.sh`
 [packages](packages)
 
 **[6. Core.](6-core)** *What is the smallest platform that does all of that?*
-171 lines. A Responses request comes in, `model` names a harness and a provider, the package runs in the
+181 lines. A Responses request comes in, `model` names a harness and a provider, the package runs in the
 container on the session's two folders, and a Responses response goes back. Any OpenAI client can drive any
 harness, and change harness in the middle of a session. `core.py`
 
@@ -66,6 +66,11 @@ I had written three packages by hand, the same way each time. The method was sta
 5, both already written down. So I gave those two pages to an agent, as a harness package of its own, and asked
 it for a fourth. Its own `run` takes the Responses API as far as its CLI goes, because every package it builds
 is written with the shape of it. `build.py`, and the [fde](packages/fde) package
+
+**[8. Console.](8-console)** *What is the smallest thing a person can use it through?*
+One page, 113 lines, no library. A model line, a message, and the id of the last response to carry on from. It
+draws a reply from the response's output items alone, so it shows any harness's work the same way, and it calls
+the one route any application calls. `console.html`
 
 ## What it comes to
 
@@ -77,6 +82,7 @@ is written with the shape of it. `build.py`, and the [fde](packages/fde) package
 | One request and one answer for every harness, with the session kept server side (stage 5) | The OpenAI Responses API, unmodified |
 | `harness/provider/model` (stage 6) | The model line: the one field that says what runs a request |
 | The agent that builds packages (stage 7) | HG FDE, which ships with the platform |
+| A page that calls the API and nothing else (stage 8) | The console: a client of the API, which the API is whole without |
 
 ## Where it went
 

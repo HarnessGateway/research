@@ -6,7 +6,7 @@ it, so I put it behind HTTP.
 
 ## The file
 
-[core.py](core.py) is 171 lines of standard library, and it is the whole of the idea:
+[core.py](core.py) is 181 lines of standard library, and it is the whole of the idea:
 
 ```sh
 python3 core.py          # http://127.0.0.1:8600/v1
@@ -46,7 +46,9 @@ lines. Three requests, three harnesses, one `previous_response_id` after another
 ## What it is not
 
 It is the idea, working, for one person on their own machine. It answers one request at a time, on `127.0.0.1`,
-with no key.
+with no key. It takes a request only as `application/json`, which a page of another site cannot make a browser
+send unasked; and at `/` it hands out one page, the console of [stage 8](../8-console), which calls it as any
+client does.
 
 | Missing | Why it matters |
 |---|---|

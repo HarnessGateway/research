@@ -111,12 +111,11 @@ itself the pages beside it. A builder's own habits are copied with its good ones
 The answer about the line it had not written is stage 4's finding again, seen from inside: a harness is not told
 what another did.
 
-## Where the story ends
+## What it led to
 
 One harness package builds every other harness package, because it knows how I research a harness, it knows the
 contract, and it runs on the platform it builds for. The work this repository set out to capture, building an
 agent around any agent harness CLI, is now something I can ask for by name.
 
-This is where the research stops and the platform begins:
-[HarnessGateway](https://github.com/HarnessGateway/harnessgateway), the self-hosted community edition, which
-ships two packages: a shell, to try an environment, and HG FDE, to build the rest.
+All of it I had used from a terminal. The one thing the core still lacked was the first thing anyone else would
+ask for: something to use it through. [8. Console](../8-console).
