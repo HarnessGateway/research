@@ -1,13 +1,8 @@
 #!/bin/sh
-# install: Pi (the coding agent CLI) at a pinned version, by its makers' own method (npm), under $HG_HARNESS/tools.
+# install: the Pi coding agent at a pinned version, by its makers' own method (npm), under $HG_HARNESS/tools.
 set -eu
 VERSION=1.6.0
-have=$(node --version 2>/dev/null || echo "no node")
-node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=19)?0:1)' 2>/dev/null || {
-  echo "Pi $VERSION needs node >= 22.19.0, and this machine has $have" >&2
-  exit 1
-}
-npm install --prefix "$HG_HARNESS/tools" --no-audit --no-fund --loglevel=error --ignore-scripts \
+npm install --prefix "$HG_HARNESS/tools" --no-audit --no-fund --loglevel=error \
   "@earendil-works/pi-coding-agent@$VERSION"
-got=$("$HG_HARNESS/tools/node_modules/.bin/pi" --version | head -1)
+got=$("$HG_HARNESS/tools/node_modules/.bin/pi" --version | tr -d '[:space:]')
 [ "$got" = "$VERSION" ] || { echo "installed Pi $got, and $VERSION was wanted" >&2; exit 1; }

@@ -72,7 +72,7 @@ It is one Responses request to `fde/deepseek/deepseek-flash`, like any other.
 
 ## What I ran
 
-I asked it for Pi, a CLI I had written no package for. I asked twice.
+I asked it for Pi, a CLI I had written no package for. I asked three times.
 
 **The first time**, its `run` was the Claude Code package's. In under twelve minutes it installed Pi 1.6.0, read
 its help and its documentation, ran it headless against the provider over two APIs, and wrote `install`, a `run`
@@ -89,24 +89,26 @@ describes.
 
 **The second time** I asked for Pi, it took 25 minutes, because it tried more. It wrote itself a tool server to
 see how Pi takes one, gave Pi an image and a file, ran a command that fails and one that runs out of time, and
-stopped a turn to see the session kept. [packages/pi](../packages/pi) is that package, exactly as it wrote it:
-a `run` of 562 lines, and a README that says what it honours and what it leaves alone. I ran it on the core
-without touching it:
+stopped a turn to see the session kept. Its `run` was 562 lines, and it worked. But it gave Pi the package's own
+`README.md` as instructions on every turn. It had copied that from its builder, whose `run` gives itself the
+pages beside it: a builder's habits are copied with its good ones.
+
+**So I told it**, in one sentence of its own page, that its pages are its own, and asked a third time.
+[packages/pi](../packages/pi) is that package, exactly as it wrote it: 21 minutes, a `run` of 411 lines that
+gives Pi the request's instructions and nothing else, and a README that says what it honours and what it leaves
+alone. I ran it on the core without touching it:
 
 | Request | Answer |
 |---|---|
 | `pi`: create a file, then run a command that exits 3 | wrote the file; the response has the command's exit code, 3 |
-| `pi`, continuing, with an effort: edit the file | `update_file`, with the diff of the one line |
-| `pi`, with a `developer` message, on a new turn and on a continued one | obeyed it both times |
+| `pi`, continuing, with an effort and a `developer` message: edit the file | `update_file`, with the diff of the one line, and the message obeyed |
+| `pi`, with a `developer` message on a new turn, then instructions on the next | obeyed each |
 | `pi`, with a tool server and a token, beside a server that is not there | listed the first server's tools, said the second did not connect, and called the tool |
 | `pi`, with an image and a file inside the request | read the word in the file |
 | `codex`, on the same session, then `pi` again | Codex appended a line; Pi printed the file, and said it held a line it had not written |
 | `pi`, with `tool_choice: "none"` | answered, and ran nothing |
 
-Every response is what the OpenAI SDK's own model of a response describes. Two things did not go as they
-should. Once, on a continued turn with several steps, Pi left a `developer` message unheeded. And the package
-gives Pi its own `README.md` as instructions on every turn: it copied that from its builder, whose `run` gives
-itself the pages beside it. A builder's own habits are copied with its good ones.
+Every response is what the OpenAI SDK's own model of a response describes.
 
 The answer about the line it had not written is stage 4's finding again, seen from inside: a harness is not told
 what another did.

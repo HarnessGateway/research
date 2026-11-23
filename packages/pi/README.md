@@ -1,72 +1,71 @@
-# Pi harness package
+# Pi coding agent harness package
 
-The Pi coding agent CLI, `@earendil-works/pi-coding-agent`, at **1.6.0** (the `latest` tag on npm when this was
-written), behind the OpenAI Responses API. `install` puts it under `$HG_HARNESS/tools`; `run` turns one Responses
-request into one Pi turn and Pi's JSON event stream back into Responses items.
+`install` and `run` for **Pi**, the coding agent CLI from `@earendil-works/pi-coding-agent`.
+Everything below is true of **Pi 1.6.0** (the version `install` pins), on Node >= 22.19.0.
 
-The answers below are true of 1.6.0. Each says where it came from: **help** (`pi --help`, `pi mcp --help`,
-`pi auth --help`), **docs** (the `docs/` shipped inside the package), or **test** (a headless run against this
-session's provider).
+## The nine answers
 
-## The nine questions
-
-| | Question | Answer | Source |
+| | Question | Answer | Where it came from |
 |---|---|---|---|
-| 1 | How is it installed? | npm: `npm install --prefix $HG_HARNESS/tools @earendil-works/pi-coding-agent@1.6.0`. It is plain JavaScript (`dist/bundle/cli.js`); there is no postinstall step and nothing is built. It needs Node >= 22.19.0 (`engines`), and `install` refuses an older Node. | docs: `package.json`; test: install + `--version` |
-| 2 | How does it run one turn with no person? | `pi --mode json --print`. The prompt goes in on standard input; Pi prepends piped stdin to the first prompt. The prompt can also be the last argument, and `@path` arguments attach files. `--mode json` implies one-shot even without `--print`. | help; docs `cli.md`, `json.md`; test |
-| 3 | What does it print that a program can read? | JSONL on stdout: a `session` header, then `agent_start`, `turn_start`, `message_start`/`message_update`/`message_end`, `tool_execution_start`/`tool_execution_end`, `turn_end`, `agent_end`, `agent_settled`. `message_update.assistantMessageEvent` carries `text_delta`, `thinking_delta`, `toolcall_*`. Usage is on each assistant `message_end`. | docs `json.md`; test |
-| 4 | How is it told its provider? | `models.json` in the agent directory (`$PI_CODING_AGENT_DIR`, default `~/.pi/agent`): a provider with `baseUrl`, `api`, `apiKey` and a model. There is no base-URL command-line flag and no `ANTHROPIC_BASE_URL`-style variable (`models.json` is the documented way). `--provider hg --model <id>` selects it. It speaks Anthropic Messages, OpenAI Responses, OpenAI Chat Completions and Google Generative AI. | help; docs `models.md`, `models-configuration.md`, `providers.md`; test |
-| 5 | How is it given instructions? | `--append-system-prompt <text-or-file>`, repeatable. `run` writes the combined text to a file under `$HG_STATE` and passes the path. A test confirmed it reaches a **resumed** session. `--system-prompt` replaces Pi's own prompt, which would remove Pi's tool guidance, so it is not used. | help; docs `cli.md`; test |
-| 6 | How does it continue a session? | Sessions are saved under `~/.pi/agent/sessions/` (in this container, `$HOME`, the session's mind). The session header's `id` names one; `--session-id <id>` opens that session for the current directory or creates it. `run` writes the id to `$HG_STATE/session` the moment the header arrives. | help; docs `sessions.md`, `json.md`; test (second turn knew the first's file) |
-| 7 | How does it act without asking? | It acts without asking by default: `bash`, `edit` and `write` have no approval step in print/JSON mode. `--no-approve` keeps it from trusting project-local `.pi` configuration and resources. The container is what holds it. | help; docs `security.md` |
-| 8 | How is it kept off the network? | `--offline` (equal to `PI_OFFLINE=1`) disables startup network operations and model-catalog refreshes; `PI_SKIP_VERSION_CHECK=1` disables the pi.dev version check; `PI_TELEMETRY=0` disables telemetry and provider attribution headers. `run` sets all three. | help; docs `environment-variables.md` |
-| 9 | What does it leave behind? | In `$HOME`: `.pi/agent/` with `models.json` (written by `run` every turn), `mcp.json` (written every turn), `auth.json`/`mcp-auth.json` if anything signs in, and `sessions/<cwd-slug>/<time>_<id>.jsonl`. In the working directory: whatever the agent creates, plus `.pi/` only if something writes it. `run` writes no files there. | test |
+| 1 | How is it installed? | `npm install @earendil-works/pi-coding-agent@1.6.0`; the CLI is `dist/bundle/cli.js`, run by Node. Node >= 22.19.0 must already be on the machine. | `npm view` metadata, the package's `package.json` (`bin`, `engines`), and `install` itself |
+| 2 | How does it run one turn with no person? | `pi -p` (`--print`, `--mode json` also runs once). The prompt is a trailing argument after `--`; `@path` arguments beside it attach files. Piped stdin is prepended to the first prompt, but a prompt argument is what this package uses. | `pi --help`; `docs/cli.md`; test |
+| 3 | What does it print that a program can read? | `--mode json`: one JSON object per line on stdout. The first is `{"type":"session","id":…,"cwd":…}`, then `agent_start`, `turn_start`, `message_start`/`message_update`/`message_end`, `tool_execution_start`/`tool_execution_update`/`tool_execution_end`, `turn_end`, `agent_end`, `agent_settled`, plus `auto_retry_*` and `compaction_*`. Text and thinking arrive as `message_update.assistantMessageEvent` (`text_delta`, `thinking_delta`, `toolcall_delta`); token usage is on each assistant `message_end`/`turn_end`. | `docs/json.md`; test (`out7`, `out9`) |
+| 4 | How is it told its provider? | A custom provider in `models.json` under the agent directory: `providers.<id>.baseUrl`, `api`, and `models`. The key is `--api-key` (or `apiKey` in `models.json`, with `$NAME` interpolation). The model is `--provider <id> --model <id>`. | `docs/models.md` (§ Configure a compatible endpoint), `docs/models-configuration.md`, `docs/providers.md`; test |
+| 5 | How is it given instructions? | `--append-system-prompt <text>` (repeatable) adds to Pi's own coding-assistant prompt; `--system-prompt <text>` replaces it. The append flag is applied on every run, so it also reaches a resumed session. | `pi --help`; test (ZEBRA on a continued session) |
+| 6 | How does it continue a session? | Sessions are JSONL files under the agent directory's `sessions/`, or under `--session-dir`. Each file is `<timestamp>_<uuid>.jsonl`; the uuid is the session id and is printed in the first `session` record. `--session-id <id>` uses that session (creating it if absent); `--continue`, `--resume` and `--session <id|path>` are the other forms. | `pi --help`; `docs/sessions.md`; `docs/json.md`; test |
+| 7 | How does it act without asking? | It does not ask: Pi's tools run with the process's own permissions, and print/JSON/RPC modes cannot show the trust prompt. `--no-approve` makes an automated run ignore project-local protected resources (extensions, settings, trust-gated files); `--approve` trusts them. The sandbox is the boundary. | `docs/security.md`; `pi --help` |
+| 8 | How is it kept off the network? | `--offline` (equivalently `PI_OFFLINE=1`) disables startup network activity, including model-catalog refresh. `PI_TELEMETRY=0` turns off telemetry and provider attribution headers. Updates only happen through an explicit `pi update`; `--no-approve` keeps project extensions from loading. | `pi --help`; `docs/cli.md`; `docs/environment-variables.md` |
+| 9 | What does it leave behind? | In the agent directory (`PI_CODING_AGENT_DIR`): `auth.json`, `models-store.json`, `mcp.log` when a tool server logs, and (with this package) the `models.json` and `mcp.json` `run` writes. In the session directory: one JSONL session file per session, named `<timestamp>_<uuid>.jsonl`. In the working directory: the files the agent writes. | test (agent and session directories after the turns) |
 
-## The provider APIs it speaks
+## Provider APIs Pi speaks
 
-Pi has an API implementation for each of these; `run` uses the first one the provider's environment supplies:
+Pi's provider layer implements **Anthropic Messages**, **OpenAI Responses**, **OpenAI Chat Completions** and
+**Google Gemini** (plus Bedrock Converse and Mistral Conversations, for which the harness contract has no base
+URL variable). The package names each of the contract's four variables to Pi's internal `api` value:
 
-| Variable | Pi `api` | Pi's name for the protocol |
-|---|---|---|
-| `HG_PROVIDER_ANTHROPIC` | `anthropic-messages` | Anthropic Messages |
-| `HG_PROVIDER_OPENAI_RESPONSES` | `openai-responses` | OpenAI Responses |
-| `HG_PROVIDER_OPENAI_CHAT` | `openai-completions` | OpenAI Chat Completions |
-| `HG_PROVIDER_GEMINI` | `google-generative-ai` | Google Generative AI |
-
-It also speaks Azure OpenAI Responses, Mistral Conversations and Bedrock Converse, but this contract names no base
-URL for those, so they are not reachable here. When no variable is set, `run` ends the turn as failed with code
-`no_provider` and names the four APIs. The key goes in `models.json` as `$HG_PROVIDER_KEY` (Pi interpolates the
-environment variable at request time), so no secret is written to disk.
-
-## What `run` honours, and what it leaves alone
-
-| Request field | How Pi is given it |
+| Contract variable | Pi `api` value |
 |---|---|
-| `input` (string, or message items) | One prompt on stdin. `user` parts become text; `input_image` with a data URL and `input_file` with `file_data` are written under `$HG_STATE/given` and passed as `@path` (Pi inlines text files and attaches images). An image or file at a URL is named in the prompt and noted on stderr: Pi reads from disk, not from a URL. An earlier `assistant` message is given as "Earlier, you said: …". A `developer` or `system` message is instructions. |
-| `instructions` | `--append-system-prompt` (file), together with any `developer`/`system` text in `input`. It also reaches a resumed session. |
-| `reasoning.effort` | `--thinking` with the same level: `none`→`off`, then `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. A model is told it reasons only when the request asks for an effort. Other `reasoning` fields are noted on stderr. |
-| `tools` of type `mcp` | `mcp.json` in the agent directory, one server per request entry with `exposure: "direct"` so its tools are declared to the model. `authorization` becomes `Authorization: Bearer …`; `headers` override it. `$` and a leading `!` are escaped so header values stay literal. The server's tools are printed as `mcp_list_tools` from `pi mcp list --json` before the turn, or from the tools-added system message when the listing did not reach it. |
-| `tool_choice: "none"` | `--no-tools`, and no MCP servers are configured; Pi answers and does nothing. |
-| `text.format` of type `json_schema` | **Left alone**: Pi 1.6.0 has no flag or setting for a schema-constrained answer. The turn is noted on stderr. |
-| `model`, `previous_response_id`, `stream`, `background`, `store`, `metadata` | Core Responses fields with no Pi equivalent; `model` is replaced by `$HG_MODEL` and `previous_response_id` by the stored Pi session. |
+| `HG_PROVIDER_ANTHROPIC` | `anthropic-messages` |
+| `HG_PROVIDER_OPENAI_RESPONSES` | `openai-responses` |
+| `HG_PROVIDER_OPENAI_CHAT` | `openai-completions` |
+| `HG_PROVIDER_GEMINI` | `google-generative-ai` |
 
-Anything else in the request (an unknown field, a non-`mcp` tool, another `tool_choice`, another `text` key) is
-named on standard error, one note per field. Nothing is ignored unsaid.
+## How `run` puts a request into Pi
 
-## What `run` prints
+| In the request | What `run` does |
+|---|---|
+| `input` as a string | The prompt argument. |
+| `input` as messages | `user` text becomes the prompt; `developer`/`system` text becomes instructions; `assistant` text is added as "Earlier, you said: …". |
+| `input_text` | Prompt text. |
+| `input_image` | A data URL is decoded and passed as an `@path` argument; an `http(s)` URL is fetched and passed the same way (or, if the fetch fails, named in the prompt). |
+| `input_file` | `file_data` (base64 or data URL) is written under `/tmp/given-<pid>/` and passed as `@path`; `file_url` is named in the prompt. |
+| `instructions` | `--append-system-prompt`, every turn, so a continued session gets it. |
+| `reasoning.effort` | `--thinking`: `none`/`off` → `off`; `minimal`, `low`, `medium`, `high`, `xhigh`, `max` as named. Other `reasoning.*` fields are left alone and logged. |
+| `text.format` | Left alone and logged: Pi has no flag for constraining its final answer to a schema. |
+| `tools` of type `mcp` | Written to the agent directory's `mcp.json` with `url`, `headers`, and `Authorization: Bearer …` from `authorization`; exposure is `direct` so the model calls `mcp__<server>__<tool>` itself. Other tool types are left alone and logged. |
+| `tool_choice: "none"` | `--no-tools --no-mcp`. Other values are the default behaviour and are not acted on. |
+| `previous.json` not `completed` | The prompt is prefixed with "Your last turn did not finish: it ended as …". |
+| `model`, `previous_response_id`, `stream`, `background`, `store`, `metadata` | Core fields. The model is `$HG_MODEL` (as the contract says); the session is Pi's own id under `$HG_STATE`. |
 
-One JSON object per line on stdout: `message` / `reasoning` items (or their deltas), `shell_call` +
-`shell_call_output`, `apply_patch_call` + `apply_patch_call_output` for `write` and `edit`, `mcp_list_tools`,
-`mcp_call` (begun and ended), `custom_tool_call` + `custom_tool_call_output` for `read`, `grep`, `find`, `ls`,
-`codemode`, `tool_search` and any other tool Pi registers, and the final `response.completed`,
-`response.incomplete` (Pi's `stopReason: "length"`) or `response.failed` (an error or abort, or Pi exiting before
-it settled). Usage is summed over the assistant messages of the run: input includes cache reads and cache writes,
-and `output_tokens_details.reasoning_tokens` is Pi's `usage.reasoning`.
+Any other request field is named on standard error as left alone.
 
-## Files
+## How `run` turns what Pi does into Responses output
 
-```
-install      npm install at the pinned version, then a version check
-run          Python 3, standard library only; one turn
-README.md    this file (also given to Pi as part of its system prompt)
-```
+| Pi prints | `run` prints |
+|---|---|
+| `message_update` / `text_delta` | `response.output_text.delta` |
+| `message_update` / `thinking_delta` | `response.reasoning_summary_text.delta` |
+| `tool_execution_start` / `end` for `bash` | `shell_call` with `action.commands` (and `timeout_ms`), then `shell_call_output` with `stdout`, `stderr`, and the command's own `exit_code`; a timed-out command gets `{"type":"timeout"}` |
+| `tool_execution_start` / `end` for `write` and `edit` | `apply_patch_call` with `create_file` (a new file) or `update_file`, `path`, and the diff — from `details.patch` for an edit, from the written content for a write — then `apply_patch_call_output` (`failed` with an `output` when it could not) |
+| `tool_execution_start` / `end` for `mcp__<server>__<tool>` | `response.output_item.added` and `.done` around an `mcp_call` with `id`, `server_label`, `name`, `arguments`, `status`, and `output` or an `mcp_tool_execution_error` |
+| The system message's `toolsAdded`, plus `pi mcp list --json` for each server's state | `mcp_list_tools` per configured server, with each tool's `input_schema` from Pi, and an `error` when the server did not connect |
+| Any other tool (`read`, `grep`, `find`, `ls`, …) | `custom_tool_call` with `name` and `input`, then `custom_tool_call_output` with the same `call_id`, a `status` and `output` |
+| `agent_settled` | `response.completed`, or `response.incomplete` (`max_output_tokens`) when the last stop reason was `length`, or `response.failed` for an error/stop. Usage is summed over the turn's assistant messages: `input_tokens` (including cache reads and writes), `output_tokens`, `cached_tokens`, `cache_write_tokens`, `reasoning_tokens`. |
+
+Pi has no built-in web-search tool, so no `web_search_call` is produced.
+
+## Sessions and stopping
+
+The session id is written to `$HG_STATE/session` the moment the `session` record arrives, and read back on the
+next turn as `--session-id`. `run` ignores `SIGTERM` and keeps reading until Pi exits, so Pi can save its session
+after a stopped turn.

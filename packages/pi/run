@@ -1,562 +1,411 @@
 #!/usr/bin/env python3
-"""run: one turn of Pi, the coding agent CLI. Every field of the Responses request that Pi has a flag or a setting
-for is given to it, and each thing it does is printed as the output item or the stream event that says what it was.
-
-What Pi is given, and where it came from (Pi 1.6.0):
-  provider    models.json in the agent directory: baseUrl, api, apiKey and the model (help, docs/models.md)
-  turn        `pi --mode json --print` (help; docs/cli.md, docs/json.md)
-  prompt      standard input, which Pi prepends to the first prompt (docs/cli.md)
-  files       @path arguments, which Pi inlines or attaches to the first prompt (help, docs/cli.md)
-  system      --append-system-prompt with a file path; it applies to a resumed session too (tested)
-  thinking    --thinking <level> (help, docs/cli.md)
-  no tools    --no-tools (help)
-  session     --session-id <id> opens or creates that session for this directory; the id is in the session header
-  mcp         mcp.json in the agent directory, each server with exposure "direct" so its tools are declared
-  off switch  --offline, PI_OFFLINE, PI_SKIP_VERSION_CHECK, PI_TELEMETRY (help, docs/environment-variables.md)
-"""
+"""run: one turn of the Pi coding agent, for HarnessGateway. It reads a Responses request, gives Pi every field
+of it that Pi has a flag or a setting for, and prints each thing Pi does as the Responses item or stream event
+that says what it was. Pi's `--mode json` is the stream this is written from."""
 import base64
-import difflib
-import glob
 import json
 import os
 import re
 import signal
 import subprocess
 import sys
-import threading
+import urllib.request
 
 HARNESS, TURN, STATE = os.environ["HG_HARNESS"], os.environ["HG_TURN"], os.environ["HG_STATE"]
-CLI = os.path.join(HARNESS, "tools", "node_modules", ".bin", "pi")
-AGENT_DIR = os.path.join(os.environ["HOME"], ".pi", "agent")   # Pi's own memory for this session
-SESSION = os.path.join(STATE, "session")                       # Pi's id for the session, to resume it
-GIVEN = os.path.join(STATE, "given")                           # files a request sends, for this session
-SYSTEM = os.path.join(STATE, "system.md")                      # this turn's appended system prompt
-MODEL = os.environ["HG_MODEL"]
-
-# What of a request this package acts on: the rest is named in the turn's log, so nothing is ignored unsaid.
+AGENT = os.path.join(STATE, "agent")                   # Pi's config directory (models.json, mcp.json)
+SESSIONS = os.path.join(STATE, "sessions")             # Pi's session storage
+SESSION = os.path.join(STATE, "session")               # Pi's own id for this session
+GIVEN = os.path.join("/tmp", "given-%d" % os.getpid())  # a file sent inside the request, put here for this turn
+# What of a request this package acts on: the rest is named in the turn's log, so that nothing is ignored unsaid.
 ACTED_ON = {"input", "instructions", "reasoning", "text", "tools", "tool_choice"}
 THE_CORES = {"model", "previous_response_id", "stream", "background", "store", "metadata"}
-# The provider APIs Pi speaks, in the order this package prefers them, and the variable naming each base URL.
-APIS = [("HG_PROVIDER_ANTHROPIC", "anthropic-messages"),
-        ("HG_PROVIDER_OPENAI_RESPONSES", "openai-responses"),
-        ("HG_PROVIDER_OPENAI_CHAT", "openai-completions"),
-        ("HG_PROVIDER_GEMINI", "google-generative-ai")]
-EFFORTS = {"none": "off", "minimal": "minimal", "low": "low", "medium": "medium",
+# The provider APIs Pi speaks, in the order this package prefers them. Pi's own name for each API is in column 2.
+APIS = (("HG_PROVIDER_ANTHROPIC", "anthropic-messages", "the Anthropic API"),
+        ("HG_PROVIDER_OPENAI_RESPONSES", "openai-responses", "the OpenAI Responses API"),
+        ("HG_PROVIDER_OPENAI_CHAT", "openai-completions", "the OpenAI Chat Completions API"),
+        ("HG_PROVIDER_GEMINI", "google-generative-ai", "the Google Gemini API"))
+EFFORTS = {"none": "off", "off": "off", "minimal": "minimal", "low": "low", "medium": "medium",
            "high": "high", "xhigh": "xhigh", "max": "max"}
-SHELL_TOOLS = ("bash", "powershell")
-TEXT_EXTS = {".txt", ".md", ".markdown", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".csv",
-             ".tsv", ".xml", ".html", ".css", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".py", ".rb", ".go",
-             ".rs", ".java", ".c", ".h", ".cpp", ".sh", ".sql", ".log", ".env"}
+FILE_TOOLS = ("write", "edit")
 
 
 def say(line):
     print(json.dumps(line), flush=True)
 
 
-def write_prompt(stream, text):
-    try:
-        stream.write(text)
-    except (BrokenPipeError, ValueError):
-        note("Pi closed its input before the prompt was written")
-    finally:
-        try:
-            stream.close()
-        except (BrokenPipeError, ValueError):
-            pass
-
-
 def note(text):
-    print(text, file=sys.stderr, flush=True)
-
-
-def escaped(value):
-    """A header value for Pi's mcp.json, with `$` and a leading `!` kept literal instead of interpolated."""
-    text = str(value).replace("$", "$$")
-    return "$!" + text[1:] if text.startswith("!") else text
-
-
-def label_for(name, used):
-    """A tool server's name as Pi accepts it (letters, digits, _ and -), kept unique."""
-    clean = re.sub(r"[^A-Za-z0-9_-]", "_", name or "server") or "server"
-    while clean in used:
-        clean += "_"
-    used.add(clean)
-    return clean
+    print(text, file=sys.stderr, flush=True)           # standard error is the turn's log
 
 
 # the request
 
 
-def save(name, data):
-    """A file sent inside the request, written under the session's mind so a later turn can name it too."""
+def saved(name, data):
+    """Put the bytes of a file sent inside the request where Pi can be handed it with @path."""
     os.makedirs(GIVEN, exist_ok=True)
-    base = os.path.basename(name or "file") or "file"
-    path = os.path.join(GIVEN, base)
-    stem, ext = os.path.splitext(path)
-    n = 1
-    while os.path.exists(path):
-        if open(path, "rb").read() == data:
-            return path
-        path, n = f"{stem}-{n}{ext}", n + 1
+    path = os.path.join(GIVEN, os.path.basename(name) or "file")
     with open(path, "wb") as file:
         file.write(data)
     return path
 
 
-def decode(data, what):
-    try:
-        return base64.b64decode(data)
-    except ValueError:
-        note(f"left alone: a {what} whose data is not base64")
-        return None
-
-
-def part_of(part):
-    """One part of a message: words as words; an image or a file as a path Pi can be given with @path, or as a
-    sentence naming where it is when Pi cannot take it that way."""
+def part_of(part, attached):
+    """One part of a message, as the text of Pi's prompt, and any file it carries added to `attached`: Pi takes
+    a file as an @path argument beside the prompt."""
     kind = part.get("type")
     if kind in ("input_text", "output_text"):
-        return part.get("text", ""), []
-    source = part.get("image_url") or part.get("file_data") or ""
-    if isinstance(source, dict):
-        source = source.get("url") or source.get("file_data") or ""
-    inline = re.fullmatch(r"data:([\w/+.-]+);base64,(.*)", source or "", re.S)
-    if kind == "input_image":
-        if inline:
-            mime = inline[1].split("/")[-1].split("+")[0]
-            name = part.get("filename") or part.get("name") or f"image.{mime or 'png'}"
-            data = decode(inline[2], "image")
-            if data is not None:
-                return "", [save(name, data)]
-        if part.get("image_url"):
-            url = part["image_url"]
-            url = url.get("url") if isinstance(url, dict) else url
-            note("left alone: an image at a URL; Pi reads an image from a file, not from a URL")
-            return f"An image is at {url}", []
-    if kind == "input_file":
-        if part.get("file_data"):
-            data = decode(inline[2] if inline else part["file_data"], "file")
-            if data is None:
-                return "", []
-            path = save(part.get("filename") or "file", data)
-            if os.path.splitext(path)[1].lower() in TEXT_EXTS or (inline and inline[1].startswith("text/")):
-                return "", [path]
-            return f"A file given with this request is at {path}", []
-        if part.get("file_url"):
-            note("left alone: a file at a URL; Pi reads a file from disk")
-            return f"A file is at {part['file_url']}", []
-    note(f"left alone: a {kind} part this package cannot give Pi")
-    return "", []
+        return part.get("text", "")
+    data = part.get("image_url") or part.get("file_data") or ""
+    inline = re.fullmatch(r"data:([\w/+.-]+);base64,(.*)", data, re.S)
+    if kind == "input_image" and inline:
+        suffix = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp"}.get(inline[1])
+        attached.append(saved("image" + (suffix or ".bin"), base64.b64decode(inline[2])))
+        return "(An image is attached to this request.)"
+    if kind == "input_image" and part.get("image_url"):
+        try:
+            with urllib.request.urlopen(part["image_url"], timeout=15) as answer:
+                attached.append(saved("image", answer.read()))
+            return "(An image is attached to this request.)"
+        except Exception as error:                     # a URL Pi cannot be handed as a file is still named
+            note(f"could not fetch the image at {part['image_url']}: {error}")
+            return f"(An image given with this request: {part['image_url']})"
+    if kind == "input_file" and inline:
+        path = saved(part.get("filename") or "file", base64.b64decode(inline[2]))
+        attached.append(path)
+        return f"A file given with this request is attached: {path}"
+    if kind == "input_file" and part.get("file_data"):
+        path = saved(part.get("filename") or "file", base64.b64decode(part["file_data"]))
+        attached.append(path)
+        return f"A file given with this request is attached: {path}"
+    if kind == "input_file" and part.get("file_url"):
+        return f"A file given with this request: {part['file_url']}"
+    note(f"left alone: a part of type {kind}, which this package cannot give Pi")
+    return ""
 
 
 def asked(request):
-    """The request's input as Pi takes it: one prompt, the files to attach, and the instructions said in it.
-    What the agent itself said earlier is given as that; a developer or system message is instructions."""
-    given, said, files, told = request.get("input"), [], [], []
-    items = [{"role": "user", "content": given}] if isinstance(given, str) else (given or [])
+    """The request's input as Pi takes it: the text of one prompt, the files that go beside it, and what a
+    developer or the system said in the input, which is instructions."""
+    given = request.get("input") or ""
+    items = [{"role": "user", "content": given}] if isinstance(given, str) else given
+    said, told, attached = [], [], []
     for item in items:
         if not isinstance(item, dict):
-            note(f"left alone: an input item that is a {type(item).__name__}")
+            note(f"left alone: an input item of type {type(item).__name__}")
             continue
-        role, content = item.get("role"), item.get("content", item.get("text"))
-        parts = [{"type": "input_text", "text": content}] if isinstance(content, str) else (content or [])
-        words = []
-        for part in parts:
-            text, paths = part_of(part if isinstance(part, dict) else {"type": "input_text", "text": str(part)})
-            if text:
-                words.append(text)
-            files += paths
-        text = "\n\n".join(words)
+        content, role = item.get("content"), item.get("role")
+        if "content" not in item and item.get("type") in ("input_text", "input_image", "input_file"):
+            content, role = [item], "user"            # a bare content part is something the person sent
+        parts = [{"type": "input_text", "text": content}] if isinstance(content, str) else content or []
+        rendered = [part_of(part, attached) for part in parts if isinstance(part, dict)]
         if role == "user":
-            said.append(text)
+            said += [text for text in rendered if text]
         elif role in ("developer", "system"):
-            told.append(text)
+            told += [text for text in rendered if text]
         elif role == "assistant":
-            said.append(f"Earlier, you said: {text}")
+            said.append("Earlier, you said: " + "\n".join(text for text in rendered if text))
         else:
             note(f"left alone: an input item of type {item.get('type') or role}")
     with open(os.path.join(TURN, "previous.json"), encoding="utf-8") as file:
         before = (json.load(file) or {}).get("status")
+    prompt = "\n\n".join(said) or ("The file(s) for this request are attached." if attached else "")
     if before not in (None, "completed"):
-        said.insert(0, f"Your last turn did not finish: it ended as {before}.")
-    return "\n\n".join(part for part in said if part), files, told
-
-
-# the provider
+        prompt = f"Your last turn did not finish: it ended as {before}.\n\n{prompt}"
+    return prompt, attached, told
 
 
 def provider():
-    """The first API Pi speaks that this provider speaks: its base URL and Pi's name for the API."""
-    for variable, api in APIS:
+    """The first API the provider speaks and Pi supports, and its base URL; or None."""
+    for variable, api, said in APIS:
         if os.environ.get(variable):
-            return os.environ[variable], api
-    return None, None
+            return os.environ[variable], api, said
+    return None
 
 
-def configured(url, api, reasoning):
-    """models.json: Pi's own way of being pointed at a compatible endpoint (docs/models.md)."""
-    os.makedirs(AGENT_DIR, exist_ok=True)
-    models = {
-        "providers": {"hg": {
-            "name": "HarnessGateway provider", "baseUrl": url, "api": api,
-            "apiKey": "$HG_PROVIDER_KEY",                    # read from the key this turn is given
-            "models": [{"id": MODEL, "name": MODEL, "reasoning": reasoning, "input": ["text", "image"],
-                        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                        "contextWindow": 128000, "maxTokens": 8192}]}}}
-    with open(os.path.join(AGENT_DIR, "models.json"), "w", encoding="utf-8") as file:
+def configured(request):
+    """Pi's models.json and mcp.json for this turn. Pi has no flag for a base URL, an API or a tool server: they
+    are its settings, written here under the session's mind."""
+    os.makedirs(AGENT, exist_ok=True)
+    base, api, name = provider()
+    model = os.environ["HG_MODEL"]
+    models = {"providers": {"hg": {
+        "name": f"HarnessGateway ({name})", "baseUrl": base, "api": api,
+        "apiKey": "$HG_PROVIDER_KEY",
+        "models": [{"id": model, "name": model, "reasoning": True, "input": ["text", "image"],
+                    "contextWindow": 128000, "maxTokens": 16384}]}}}
+    with open(os.path.join(AGENT, "models.json"), "w", encoding="utf-8") as file:
         json.dump(models, file)
+    servers = {}
+    if request.get("tool_choice") == "none":
+        note("tool_choice none: Pi runs with --no-tools --no-mcp, so it answers and does nothing")
+    else:
+        for tool in request.get("tools") or []:
+            if tool.get("type") == "mcp" and tool.get("server_url"):
+                label = tool.get("server_label") or "server"
+                clean = re.sub(r"[^A-Za-z0-9_-]", "_", label)
+                if clean != label:
+                    note(f"a tool server named {label} is connected as {clean}: Pi allows letters, digits, _ and -")
+                headers = {}
+                if tool.get("authorization"):
+                    headers["Authorization"] = f"Bearer {tool['authorization']}"
+                headers.update(tool.get("headers") or {})
+                entry = {"url": tool["server_url"], "exposure": "direct"}
+                if headers:
+                    entry["headers"] = headers
+                servers[clean] = (label, entry)
+            else:
+                note(f"left alone: a tool of type {tool.get('type')}, which Pi cannot be given")
+    with open(os.path.join(AGENT, "mcp.json"), "w", encoding="utf-8") as file:
+        json.dump({"mcpServers": {clean: entry for clean, (_, entry) in servers.items()}}, file)
+    if servers:
+        return servers
+    return {}
 
 
-def servers_of(request, tool_choice):
-    """Each tool server of the request, as an mcp.json entry Pi calls its tools from: direct exposure, so they are
-    declared to the model. Names are Pi's; the request's label is kept for the output."""
-    entries, labels, used = {}, {}, set()
-    for tool in request.get("tools") or []:
-        if tool.get("type") != "mcp":
-            note(f"left alone: a tool of type {tool.get('type')}, which Pi cannot be given")
-            continue
-        if not tool.get("server_url"):
-            note(f"left alone: an mcp tool {tool.get('server_label')} with no server_url")
-            continue
-        name = label_for(tool.get("server_label") or "server", used)
-        headers = {"Authorization": f"Bearer {tool['authorization']}"} if tool.get("authorization") else {}
-        headers.update(tool.get("headers") or {})
-        entry = {"url": tool["server_url"], "exposure": "direct",
-                 "headers": {key: escaped(value) for key, value in headers.items()}}
-        if tool.get("server_description"):
-            entry["description"] = tool["server_description"]
-        entries[name] = entry
-        labels[name] = tool.get("server_label") or name
-    if tool_choice == "none":                              # tool_choice none: it answers, and does nothing
-        entries = {}
-    with open(os.path.join(AGENT_DIR, "mcp.json"), "w", encoding="utf-8") as file:
-        json.dump({"mcpServers": entries}, file)
-    return entries, labels
-
-
-def listed(entries, labels, env):
-    """What each tool server has, as Pi reports it, and the name of each tool as it is really called."""
-    if not entries:
-        return {}, {}
+def mcp_states():
+    """How each configured tool server is: `pi mcp list` connects to them, and says which did not connect."""
     try:
-        done = subprocess.run([CLI, "mcp", "list", "--json"], env=env, capture_output=True, text=True, timeout=30)
-        listed = json.loads(done.stdout) if done.stdout.strip() else {}
-    except (subprocess.TimeoutExpired, ValueError) as problem:
-        note(f"left alone for now: the tool servers could not be listed ({problem}); "
-             "their tools are named when Pi connects to them")
-        return {}, {}
-    found, tool_names = {}, {}
-    for server in listed.get("servers") or []:
-        name = server.get("name")
-        if name not in entries:
-            continue
-        found[name] = server
-        for tool in server.get("tools") or []:
-            real = tool if isinstance(tool, str) else (tool.get("name") or "")
-            tool_names[(name, re.sub(r"[^A-Za-z0-9_]", "_", real))] = real
-    return found, tool_names
+        listed = subprocess.run(
+            [os.path.join(HARNESS, "tools", "node_modules", ".bin", "pi"), "mcp", "list", "--json"],
+            env=pi_env(), capture_output=True, text=True, timeout=25)
+        return {server["name"]: server for server in (json.loads(listed.stdout).get("servers") or [])}
+    except Exception as error:
+        note(f"could not ask Pi how its tool servers are: {error}")
+        return {}
 
 
-def announce(name, server, labels, tool_names):
-    """A tool server, as the item that lists its tools or says it did not connect."""
-    tools = []
-    for tool in server.get("tools") or []:
-        real = tool if isinstance(tool, str) else (tool.get("name") or "")
-        schema = {} if isinstance(tool, str) else (tool.get("inputSchema") or {})
-        tools.append({"name": real, "input_schema": schema})
-    say({"type": "mcp_list_tools", "server_label": labels.get(name, name), "tools": tools,
-         **({} if server.get("state") == "connected" else {
-             "error": server.get("error") or f"the server is {server.get('state')}"})})
+def pi_env():
+    return {**os.environ, "PI_CODING_AGENT_DIR": AGENT, "PI_CODING_AGENT_SESSION_DIR": SESSIONS,
+            "PI_OFFLINE": "1", "PI_TELEMETRY": "0"}
+
+
+def command(request, prompt, attached, told):
+    """Pi, headless, in JSON mode, with everything of the request it has a flag for."""
+    args = [os.path.join(HARNESS, "tools", "node_modules", ".bin", "pi"),
+            "-p", "--mode", "json",                          # one turn, then exit; JSONL on stdout
+            "--provider", "hg", "--model", os.environ["HG_MODEL"],
+            "--api-key", os.environ["HG_PROVIDER_KEY"],
+            "--session-dir", SESSIONS,
+            "--offline",                                     # no model-catalog refresh or other startup fetch
+            "--no-approve"]                                  # no project-local resources without a person
+    effort = (request.get("reasoning") or {}).get("effort")
+    args += ["--thinking", EFFORTS[effort]] if effort in EFFORTS else ["--thinking", "off"]
+    if effort is not None and effort not in EFFORTS:
+        note(f"left alone: reasoning.effort {effort!r}, which is not a thinking level Pi knows")
+    for key in (request.get("reasoning") or {}):
+        if key != "effort":
+            note(f"left alone: reasoning.{key}, which Pi has no flag for")
+    instructions = "\n\n".join(part for part in [request.get("instructions"), *told] if part)
+    if instructions:
+        args += ["--append-system-prompt", instructions]     # given again each turn, so a continued session has it
+    if request.get("tool_choice") == "none":
+        args += ["--no-tools", "--no-mcp"]
+    if os.path.exists(SESSION):
+        with open(SESSION, encoding="utf-8") as file:
+            args += ["--session-id", file.read().strip()]    # continue Pi's own session
+    args.append("--")                                        # everything after is files and the prompt
+    args += ["@" + path for path in attached]                # Pi attaches a file given with @path
+    args.append(prompt)
+    return args
 
 
 # the response
 
 
 def text_of(result):
-    content = result.get("content") if isinstance(result, dict) else None
-    if isinstance(content, str):
-        return content
-    words = []
-    for block in content or []:
-        if isinstance(block, dict) and block.get("type") == "text":
-            words.append(block.get("text") or "")
-        elif isinstance(block, dict) and block.get("type") == "image":
-            words.append("[image]")
-    return "\n".join(word for word in words if word)
+    """A tool result's text: Pi gives a list of content blocks."""
+    return "\n".join(block.get("text", "") for block in (result or {}).get("content") or []
+                     if isinstance(block, dict) and block.get("type") == "text")
 
 
-def unified(before, after, path):
-    """What changed in a file, as a diff."""
-    if before is None:
-        return "".join(f"+{line}\n" for line in after.splitlines())
-    lines = list(difflib.unified_diff(before.splitlines(), after.splitlines(), lineterm="", n=3))
-    return "".join(f"{line}\n" for line in lines[2:] if not line.startswith(("---", "+++")))  # the hunks only
+def edits_diff(edits):
+    """A diff for an edit that failed before Pi could compute one: what it tried to take out and put in."""
+    lines = []
+    for edit in edits:
+        lines += [f"-{line}" for line in str(edit.get("oldText", "")).splitlines()]
+        lines += [f"+{line}" for line in str(edit.get("newText", "")).splitlines()]
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
-def read_text(path):
-    try:
-        if os.path.getsize(path) > 1 << 21:
-            return None
-        with open(path, encoding="utf-8", errors="replace") as file:
-            return file.read()
-    except OSError:
-        return None
-
-
-def begun(call_id, name, args, labels, tool_names, old):
-    """A tool call Pi has just made, printed before it runs. A command is one item; a call to a tool server is an
-    item that begins here and ends with its result; a file change is printed with its diff when it returns."""
-    if name in SHELL_TOOLS:
-        say({"type": "shell_call", "call_id": call_id, "status": "completed",
-             "action": {"commands": [args.get("command", "")],
-                        **({"timeout_ms": int(args["timeout"]) * 1000} if args.get("timeout") else {})}})
-        return {"kind": "shell"}
-    if name.startswith("mcp__") and name.count("__") >= 2:
+def started(call_id, name, given, files):
+    """A tool call Pi has just made, printed before it runs. A file change is held until its result, because
+    Pi works out the diff while it makes the change."""
+    if name == "bash":
+        action = {"commands": [given.get("command", "")]}
+        if given.get("timeout"):
+            action["timeout_ms"] = int(float(given["timeout"]) * 1000)
+        say({"type": "shell_call", "call_id": call_id, "status": "completed", "action": action})
+    elif name in FILE_TOOLS:
+        files[call_id] = {"name": name, "given": given,
+                          "existed": os.path.exists(os.path.join(os.getcwd(), str(given.get("path", ""))))}
+    elif name.startswith("mcp__") and name.count("__") >= 2:
         _, server, tool = name.split("__", 2)
-        item = {"type": "mcp_call", "id": call_id, "server_label": labels.get(server, server),
-                "name": tool_names.get((server, tool), tool), "arguments": json.dumps(args),
-                "status": "in_progress"}
+        item = {"type": "mcp_call", "id": call_id, "server_label": server, "name": tool,
+                "arguments": json.dumps(given), "status": "in_progress"}
+        files[call_id] = item
         say({"type": "response.output_item.added", "item": item})
-        return {"kind": "mcp", "item": item}
-    if name == "write":
-        return {"kind": "write", "before": old}
-    if name == "edit":
-        return {"kind": "edit", "before": old}
-    say({"type": "custom_tool_call", "call_id": call_id, "name": name, "input": json.dumps(args)})
-    return {"kind": "custom"}
+    else:
+        say({"type": "custom_tool_call", "call_id": call_id, "name": name, "input": json.dumps(given)})
 
 
-def returned(call_id, name, args, plan, result, is_error, labels):
+def returned(call_id, name, result, failed, held):
     """What came of a tool call: the item that answers it, or the end of the item it began."""
     output = text_of(result)
-    if plan["kind"] == "shell":
-        detail = result.get("structuredContent") if isinstance(result, dict) else None
-        detail = detail if isinstance(detail, dict) else {}
-        code = detail.get("exit_code")
-        stdout = detail.get("output", output)
-        timed_out = bool(args.get("timeout")) and code is None and is_error
-        say({"type": "shell_call_output", "call_id": call_id, "status": "completed", "output": [{
-            "stdout": stdout, "stderr": "",
-            "outcome": {"type": "timeout"} if timed_out else {
-                "type": "exit", "exit_code": int(code) if code is not None else int(bool(is_error))}}]})
-    elif plan["kind"] in ("write", "edit"):
-        path = str(args.get("path") or args.get("file_path") or "")
-        full = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
-        after = read_text(full)
-        before = plan.get("before")
-        if plan["kind"] == "write":
-            operation = "update_file" if plan.get("existed") else "create_file"
+    if name == "bash":
+        counted = (result or {}).get("structuredContent") or {}
+        code = counted.get("exit_code")
+        outcome = {"type": "exit", "exit_code": int(code) if isinstance(code, int) else 1}
+        stdout = counted.get("output", output)
+        if "Command timed out after" in output:
+            outcome = {"type": "timeout"}
+        say({"type": "shell_call_output", "call_id": call_id, "status": "completed",
+             "output": [{"stdout": stdout, "stderr": "", "outcome": outcome}]})
+    elif name in FILE_TOOLS:
+        given = (held or {}).get("given") or {}
+        path = str(given.get("path", ""))
+        made = name == "write" and not (held or {}).get("existed")
+        detail = (result or {}).get("details") or {}
+        if name == "write":
+            diff = "".join(f"+{line}\n" for line in str(given.get("content", "")).splitlines())
         else:
-            operation = "update_file"
-        details = result.get("details") if isinstance(result, dict) else None
-        details = details if isinstance(details, dict) else {}
-        diff = details.get("patch") or details.get("diff") or ""
-        if diff:
-            diff = "".join(line + "\n" for line in str(diff).splitlines()
-                           if not line.startswith(("---", "+++")))
-        else:
-            diff = unified(before, after if after is not None else "", path)
+            diff = detail.get("patch") or detail.get("diff") or edits_diff(given.get("edits") or [])
         say({"type": "apply_patch_call", "call_id": call_id, "status": "completed", "operation": {
-            "type": operation, "path": path, "diff": diff}})
+            "type": "create_file" if made else "update_file", "path": path, "diff": diff}})
         say({"type": "apply_patch_call_output", "call_id": call_id,
-             "status": "failed" if is_error else "completed", **({"output": output} if is_error else {})})
-    elif plan["kind"] == "mcp":
-        say({"type": "response.output_item.done", "item": {
-            **plan["item"], **({"status": "failed", "error": {"type": "mcp_tool_execution_error", "content": output}}
-                               if is_error else {"status": "completed", "output": output})}})
+             "status": "failed" if failed else "completed", **({"output": output} if failed else {})})
+    elif held and held.get("type") == "mcp_call":
+        done = {**held, "status": "failed" if failed else "completed"}
+        if failed:
+            done["error"] = {"type": "mcp_tool_execution_error", "content": output}
+        else:
+            done["output"] = output
+        say({"type": "response.output_item.done", "item": done})
     else:
         say({"type": "custom_tool_call_output", "call_id": call_id,
-             "status": "failed" if is_error else "completed", "output": output})
+             "status": "failed" if failed else "completed", "output": output})
 
 
-def ended(stop, error, aborted, counted):
+def tool_servers(servers, added, states):
+    """Each tool server Pi started with, as the item that lists its tools, or says it did not connect."""
+    found = {}
+    for tool in added or []:
+        name = tool.get("name") or ""
+        if name.startswith("mcp__") and name.count("__") >= 2:
+            _, server, tool_name = name.split("__", 2)
+            found.setdefault(server, []).append({"name": tool_name, "input_schema": tool.get("parameters") or {}})
+    for server, (label, _) in servers.items():
+        tools = found.get(server, [])
+        item = {"type": "mcp_list_tools", "server_label": label,
+                "tools": tools or [{"name": tool, "input_schema": {}}
+                                   for tool in (states.get(server) or {}).get("tools") or []]}
+        state = states.get(server) or {}
+        if state.get("state") not in (None, "connected"):
+            item["error"] = state.get("error") or f"the server is {state.get('state')}"
+        elif server not in found and not item["tools"]:
+            item["error"] = "the server did not connect, or it lists no tools"
+        say(item)
+
+
+def ended(history, usage, aborted, failure):
     """The stream's last event: how the turn ended, and the tokens it used."""
-    usage = {"input_tokens": counted["input"], "output_tokens": counted["output"],
-             "input_tokens_details": {"cached_tokens": counted["cached"], "cache_write_tokens": counted["written"]},
-             "output_tokens_details": {"reasoning_tokens": counted["reasoning"]}}
+    counted = {"input_tokens": usage["input"] + usage["cacheRead"] + usage["cacheWrite"],
+               "output_tokens": usage["output"],
+               "input_tokens_details": {"cached_tokens": usage["cacheRead"],
+                                        "cache_write_tokens": usage["cacheWrite"]},
+               "output_tokens_details": {"reasoning_tokens": usage["reasoning"]}}
+    if failure:
+        return {"type": "response.failed", "response": {"usage": counted, "error": {
+            "code": "provider_error", "message": str(failure)[:2000]}}}
     if aborted:
-        return {"type": "response.failed", "response": {"usage": usage, "error": {
-            "code": "aborted", "message": "The turn was stopped before Pi finished. Its session is saved; "
-                                          "the next turn continues from it."}}}
-    if stop in ("error", "aborted"):
-        return {"type": "response.failed", "response": {"usage": usage, "error": {
-            "code": stop, "message": (f"Pi could not finish: {error or 'its model call failed'}. "
-                                      "Check the model and the provider key for this session, then try again.")}}}
-    if stop == "length":
+        return {"type": "response.failed", "response": {"usage": counted, "error": {
+            "code": "aborted", "message": "The turn was stopped before Pi finished. Send it again to continue."}}}
+    if history.get("stopReason") == "length":
         return {"type": "response.incomplete", "response": {
-            "usage": usage, "incomplete_details": {"reason": "max_output_tokens"}}}
-    return {"type": "response.completed", "response": {"usage": usage}}
+            "usage": counted, "incomplete_details": {"reason": "max_output_tokens"}}}
+    return {"type": "response.completed", "response": {"usage": counted}}
 
 
 def main():
     with open(os.path.join(TURN, "request.json"), encoding="utf-8") as file:
         request = json.load(file)
-    url, api = provider()
-    if not url:                                            # Pi speaks four APIs: the provider must speak one
+    if provider() is None:                             # Pi speaks these APIs; the provider must speak one
         return say({"type": "response.failed", "response": {"error": {"code": "no_provider", "message": (
-            "Pi speaks the Anthropic Messages, OpenAI Responses, OpenAI Chat Completions and Google Generative AI "
-            "APIs, and this provider speaks none of them: name one, as HG_PROVIDER_ANTHROPIC, "
-            "HG_PROVIDER_OPENAI_RESPONSES, HG_PROVIDER_OPENAI_CHAT or HG_PROVIDER_GEMINI.")}}})
+            "Pi needs a provider that speaks the Anthropic API, the OpenAI Responses API, the OpenAI Chat "
+            "Completions API or the Google Gemini API: name one, as hg/provider/model.")}}})
     if unused := sorted(set(request) - ACTED_ON - THE_CORES):
         note(f"left alone: Pi has no flag or setting for {', '.join(unused)}")
-    effort = EFFORTS.get((request.get("reasoning") or {}).get("effort"))
-    for key in sorted(set(request.get("reasoning") or {}) - {"effort"}):
-        note(f"left alone: reasoning.{key}; Pi is given only reasoning.effort")
-    answer = (request.get("text") or {}).get("format") or {}
-    if answer.get("type") == "json_schema":
-        note("left alone: text.format json_schema; Pi 1.6.0 has no flag or setting that makes its answer fit a "
-             "schema")
-    for key in sorted(set(request.get("text") or {}) - {"format"}):
-        note(f"left alone: text.{key}; Pi is given no field of text")
-    choice = request.get("tool_choice")
-    if choice not in (None, "none"):
-        note(f"left alone: tool_choice {choice}; Pi is given only tool_choice none")
-    configured(url, api, reasoning=bool(effort))
-    os.makedirs(AGENT_DIR, exist_ok=True)
-    entries, labels = servers_of(request, choice)
-    text, files, told = asked(request)
-
-    args = [CLI, "--mode", "json", "--print", "--provider", "hg", "--model", MODEL,
-            "--offline", "--no-approve"]                   # no update, catalog or trust lookups nobody asked for
-    if effort:
-        args += ["--thinking", effort]
-    if choice == "none":
-        args += ["--no-tools"]
-    elif not entries:
-        args += ["--no-mcp"]
-    # What the agent is told before the person speaks: what its package knows (any .md beside these two programs),
-    # this request's instructions, and what a developer or the system said in its input.
-    known = [open(path, encoding="utf-8").read() for path in sorted(glob.glob(os.path.join(HARNESS, "*.md")))]
-    if said := "\n\n".join(part for part in [*known, request.get("instructions"), *told] if part):
-        os.makedirs(STATE, exist_ok=True)
-        with open(SYSTEM, "w", encoding="utf-8") as file:
-            file.write(said)
-        args += ["--append-system-prompt", SYSTEM]
-    if os.path.exists(SESSION):
-        with open(SESSION, encoding="utf-8") as file:
-            args += ["--session-id", file.read().strip()]
-    args += [f"@{path}" for path in files]
-
-    env = {**os.environ, "PI_CODING_AGENT_DIR": AGENT_DIR, "PI_OFFLINE": "1",
-           "PI_SKIP_VERSION_CHECK": "1", "PI_TELEMETRY": "0"}
-    found, tool_names = listed(entries, labels, env)
-    for name, server in found.items():
-        announced.add(name)
-        announce(name, server, labels, tool_names)
-
-    signal.signal(signal.SIGTERM, lambda *_: stopped.append(True))  # outlive Pi, so it saves its session
-    cli = subprocess.Popen(args, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, errors="replace")
-    writing = threading.Thread(target=write_prompt, args=(cli.stdin, text), daemon=True)
-    writing.start()                                        # Pi may start reading late; do not stall its output
-
-    calls, counted = {}, {"input": 0, "output": 0, "cached": 0, "written": 0, "reasoning": 0}
-    stop, error, settled, incomplete = None, None, False, False
-    said, thought = False, False                          # text and reasoning printed for the current message
+    if request.get("tool_choice") not in (None, "none"):
+        note(f"left alone: tool_choice {request['tool_choice']!r}; Pi acts with its tools without being told")
+    prompt, attached, told = asked(request)
+    servers = configured(request)
+    states = mcp_states() if servers else {}
+    args = command(request, prompt, attached, told)
+    if request.get("text"):
+        note("left alone: text.format, which Pi has no flag for: its final answer is its own prose")
+    usage = {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "reasoning": 0}
+    signal.signal(signal.SIGTERM, lambda *_: None)     # a stopped turn: outlive Pi, so it saves its session
+    cli = subprocess.Popen(args, env=pi_env(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           text=True, errors="replace")
+    held, history, aborted, failure, ended_by, listed = {}, {}, False, None, False, False
     for line in cli.stdout:
         try:
             event = json.loads(line)
         except ValueError:
-            note(line.rstrip())                            # not one of its events: something it printed aside
+            note(line.rstrip())                        # not one of its events: something it printed aside
             continue
         kind = event.get("type")
         if kind == "session":
             os.makedirs(STATE, exist_ok=True)
             with open(SESSION, "w", encoding="utf-8") as file:
-                file.write(event.get("id", ""))            # kept at once: a stopped turn is continued too
-            continue
-        if kind == "message_start":
-            message = event.get("message") or {}
-            said, thought = False, False
-            if message.get("role") == "system":            # a server connected, or its tools changed
-                for tool in message.get("toolsAdded") or []:
-                    name = tool.get("name") or ""
-                    if name.startswith("mcp__") and name.count("__") >= 2:
-                        server = name.split("__", 2)[1]
-                        if server not in found:            # the listing before the turn did not get this far
-                            found[server] = {"state": "connected", "tools": []}
-                        found[server].setdefault("tools", []).append(
-                            {"name": name.split("__", 2)[2], "inputSchema": tool.get("parameters") or {}})
-                        if server not in announced:
-                            announced.add(server)
-                            announce(server, found[server], labels, tool_names)
-            continue
-        if kind == "message_update":
-            delta = event.get("assistantMessageEvent") or {}
-            if delta.get("type") == "text_delta" and delta.get("delta"):
-                said = True
-                say({"type": "response.output_text.delta", "delta": delta["delta"]})
-            elif delta.get("type") == "thinking_delta" and delta.get("delta"):
-                thought = True
-                say({"type": "response.reasoning_summary_text.delta", "delta": delta["delta"]})
-            continue
-        if kind == "message_end":
-            message = event.get("message") or {}
-            if message.get("role") != "assistant":
-                continue
-            counted["input"] += int((message.get("usage") or {}).get("input") or 0)
-            counted["output"] += int((message.get("usage") or {}).get("output") or 0)
-            counted["cached"] += int((message.get("usage") or {}).get("cacheRead") or 0)
-            counted["written"] += int((message.get("usage") or {}).get("cacheWrite") or 0)
-            counted["reasoning"] += int((message.get("usage") or {}).get("reasoning") or 0)
-            stop, error = message.get("stopReason"), message.get("errorMessage")
-            content = message.get("content") or []
-            words = [block.get("text") or "" for block in content
-                     if isinstance(block, dict) and block.get("type") == "text"]
-            minds = [block.get("thinking") or "" for block in content
-                     if isinstance(block, dict) and block.get("type") == "thinking"]
-            if not thought and "".join(minds):
-                say({"type": "reasoning", "summary": [{"type": "summary_text", "text": "".join(minds)}]})
-            if not said and "".join(words) and stop not in ("error", "aborted"):
-                say({"type": "message", "role": "assistant", "status": "completed", "content": [
-                    {"type": "output_text", "text": "".join(words), "annotations": []}]})
-            continue
-        if kind == "auto_retry_end" and not event.get("success"):
-            error = event.get("finalError") or error
-            continue
-        if kind == "tool_execution_start":
-            call_id, name = event.get("toolCallId"), event.get("toolName") or ""
-            tool_args = event.get("args") or {}
-            old, existed = None, False
-            if name in ("write", "edit"):
-                path = str(tool_args.get("path") or tool_args.get("file_path") or "")
-                full = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
-                existed = os.path.exists(full)
-                old = read_text(full)
-            plan = begun(call_id, name, tool_args, labels, tool_names, old)
-            plan["existed"] = existed
-            calls[call_id] = (name, tool_args, plan)
-            continue
-        if kind == "tool_execution_end":
-            call_id, name = event.get("toolCallId"), event.get("toolName") or ""
-            if call_id not in calls:
-                note(f"left alone: the result of a tool call {call_id} this package did not see begin")
-                continue
-            _, tool_args, plan = calls.pop(call_id)
-            returned(call_id, name, tool_args, plan, event.get("result") or {}, bool(event.get("isError")), labels)
-            continue
-        if kind == "agent_settled" and not settled:
-            incomplete = bool(event.get("aborted"))
-            settled = True
-            say(ended(stop, error, incomplete, counted))
-            continue
-
+                file.write(event["id"])                # kept at once: a stopped turn is continued too
+        elif kind == "message_start" and not listed and (event.get("message") or {}).get("role") == "system":
+            listed = True
+            tool_servers(servers, event["message"].get("toolsAdded"), states)
+        elif kind == "message_update":
+            update = event.get("assistantMessageEvent") or {}
+            if update.get("type") == "text_delta":
+                say({"type": "response.output_text.delta", "delta": update.get("delta", "")})
+            elif update.get("type") == "thinking_delta":
+                say({"type": "response.reasoning_summary_text.delta", "delta": update.get("delta", "")})
+        elif kind == "message_end" and (event.get("message") or {}).get("role") == "assistant":
+            message = event["message"]
+            counted = message.get("usage") or {}
+            for key in usage:
+                usage[key] += int(counted.get(key) or 0)
+            if message.get("stopReason") == "error":
+                failure = message.get("errorMessage") or "Pi ended the turn with an error"
+            else:
+                failure = None                         # a retry that worked clears the failure before it
+            history = message
+        elif kind == "tool_execution_start":
+            started(event.get("toolCallId"), event.get("toolName"), event.get("args") or {}, held)
+        elif kind == "tool_execution_end":
+            call_id = event.get("toolCallId")
+            returned(call_id, event.get("toolName"), event.get("result"), bool(event.get("isError")),
+                     held.pop(call_id, None))
+        elif kind == "auto_retry_end" and not event.get("success"):
+            failure = event.get("finalError") or "the provider could not be reached"
+        elif kind == "auto_retry_start":
+            note(f"Pi is retrying the model call ({event.get('attempt')}/{event.get('maxAttempts')}): "
+                 f"{event.get('errorMessage')}")
+        elif kind == "compaction_end" and event.get("errorMessage"):
+            note(f"Pi could not compact its context: {event['errorMessage']}")
+        elif kind == "agent_settled" and not ended_by:
+            if servers and not listed:
+                tool_servers(servers, [], states)      # no system message came, but the servers still existed
+            aborted, ended_by = bool(event.get("aborted")), True
+            say(ended(history, usage, aborted, failure))
     code = cli.wait()
-    if not settled:
-        for _, _, plan in calls.values():                  # what it had begun and did not finish
-            if plan["kind"] == "mcp":
-                say({"type": "response.output_item.done", "item": {**plan["item"], "status": "incomplete"}})
-        if stopped:
-            say({"type": "response.failed", "response": {"error": {
-                "code": "aborted", "message": "The turn was stopped before Pi settled. Its session is saved; "
-                                              "the next turn continues from it."}}})
+    if not ended_by:
+        if failure:
+            say({"type": "response.failed", "response": {"usage": {
+                "input_tokens": usage["input"] + usage["cacheRead"] + usage["cacheWrite"],
+                "output_tokens": usage["output"]},
+                "error": {"code": "provider_error", "message": str(failure)[:2000]}}})
         else:
             say({"type": "response.failed", "response": {"error": {
-                "code": "cli_exit", "message": f"Pi exited with code {code} before it settled a turn. "
-                                               "Check the model and the provider key for this session."}}})
+                "code": "cli_exit", "message": f"Pi exited with code {code} without finishing the turn."}}})
 
-
-announced = set()                                          # servers whose tool list has been printed
-stopped = []                                               # set when this turn is told to stop
 
 if __name__ == "__main__":
     main()
