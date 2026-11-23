@@ -93,3 +93,5 @@ community edition, and what my self-hosted enterprise edition is built around.
 
 Nothing in it replaces anything here. A package is still `install` and `run`. A turn is still that container. A
 session is still those two folders. The API is still Responses.
+
+Apache-2.0: see [LICENSE](LICENSE).
