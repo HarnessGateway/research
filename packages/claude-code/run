@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""run: one turn of Claude Code. It reads the Responses request, starts Claude Code headless, and prints what it
+does as Responses output: its words and its thinking as they arrive, each step it took as an output item, and the
+stream's last event, with the tokens the turn used."""
+import json
+import os
+import signal
+import subprocess
+import uuid
+
+HARNESS, TURN = os.environ["HG_HARNESS"], os.environ["HG_TURN"]
+SESSION = os.path.join(os.environ["HG_STATE"], "session")      # Claude Code's own id for this session
+
+
+def say(line):
+    print(json.dumps(line), flush=True)
+
+
+def text_of(content):
+    return content if isinstance(content, str) else "\n".join(
+        block.get("text", "") for block in content or [] if isinstance(block, dict))
+
+
+def step(name, given, result):
+    """One finished tool call, as the output item of the kind of step it was, and the item that answers it."""
+    output, failed = text_of(result.get("content")), bool(result.get("is_error"))
+    call = {"call_id": f"call_{uuid.uuid4().hex}", "status": "completed"}
+    if name == "Bash":
+        say({"type": "shell_call", **call, "action": {"commands": [given.get("command", "")]}})
+        say({"type": "shell_call_output", **call, "output": [{
+            "stdout": "" if failed else output, "stderr": output if failed else "",
+            "outcome": {"type": "exit", "exit_code": int(failed)}}]})
+    elif name == "Write" and not failed:
+        say({"type": "apply_patch_call", **call, "operation": {
+            "type": "create_file", "path": given.get("file_path", ""),
+            "diff": "".join(f"+{line}\n" for line in str(given.get("content", "")).splitlines())}})
+        say({"type": "apply_patch_call_output", **call})
+    else:
+        say({"type": "custom_tool_call", "call_id": call["call_id"], "name": name, "input": json.dumps(given)})
+        say({"type": "custom_tool_call_output", **call, "output": output})
+
+
+def ending(result):
+    """The stream's last event, from Claude Code's last line: how the turn ended, and the tokens it used."""
+    counted = result.get("usage") or {}
+    cached = counted.get("cache_read_input_tokens", 0)
+    usage = {"input_tokens": counted.get("input_tokens", 0) + cached + counted.get("cache_creation_input_tokens", 0),
+             "output_tokens": counted.get("output_tokens", 0), "input_tokens_details": {"cached_tokens": cached}}
+    if result.get("is_error") or result.get("subtype") != "success":
+        return {"type": "response.failed", "response": {"usage": usage, "error": {
+            "code": "cli_error", "message": str(result.get("result") or result.get("subtype"))[:2000]}}}
+    return {"type": "response.completed", "response": {"usage": usage}}
+
+
+with open(os.path.join(TURN, "request.json"), encoding="utf-8") as file:
+    request = json.load(file)
+if "HG_PROVIDER_ANTHROPIC" not in os.environ:          # Claude Code speaks one API: the provider must speak it too
+    say({"type": "response.failed", "response": {"error": {"code": "no_provider", "message": (
+        "Claude Code needs a provider that speaks the Anthropic API: name one, as claude-code/provider/model.")}}})
+    raise SystemExit
+given = request["input"]
+prompt = given if isinstance(given, str) else "\n\n".join(
+    part["text"] for item in given if item.get("role") == "user" and isinstance(item.get("content"), list)
+    for part in item["content"] if part.get("type") == "input_text")
+args = [os.path.join(HARNESS, "tools", "node_modules", ".bin", "claude"), "-p", "--output-format", "stream-json",
+        "--verbose", "--include-partial-messages", "--dangerously-skip-permissions",
+        "--system-prompt-snapshot", "off"]             # so that this request's instructions reach a resumed session
+if request.get("instructions"):
+    args += ["--append-system-prompt", request["instructions"]]
+if os.path.exists(SESSION):
+    args += ["--resume", open(SESSION, encoding="utf-8").read()]
+model = os.environ["HG_MODEL"]
+env = {**os.environ, "ANTHROPIC_BASE_URL": os.environ["HG_PROVIDER_ANTHROPIC"],
+       "ANTHROPIC_AUTH_TOKEN": os.environ["HG_PROVIDER_KEY"], "ANTHROPIC_MODEL": model,
+       "ANTHROPIC_SMALL_FAST_MODEL": model, "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
+       "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_AUTOUPDATER": "1"}
+signal.signal(signal.SIGTERM, lambda *_: None)         # a stopped turn: outlive Claude Code, so it saves its session
+cli = subprocess.Popen(args, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, errors="replace")
+cli.stdin.write(prompt)
+cli.stdin.close()
+calls, ended = {}, False                               # tool calls awaiting their results
+for line in cli.stdout:
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    kind, delta = event.get("type"), (event.get("event") or {}).get("delta") or {}
+    if kind == "system" and event.get("subtype") == "init" and event.get("session_id"):
+        os.makedirs(os.path.dirname(SESSION), exist_ok=True)
+        with open(SESSION, "w", encoding="utf-8") as file:
+            file.write(event["session_id"])            # kept at once: a stopped turn is continued too
+    elif kind == "stream_event" and not event.get("parent_tool_use_id"):       # a subagent's words are not the answer
+        if delta.get("type") == "text_delta":
+            say({"type": "response.output_text.delta", "delta": delta.get("text", "")})
+        elif delta.get("type") == "thinking_delta":
+            say({"type": "response.reasoning_summary_text.delta", "delta": delta.get("thinking", "")})
+    elif kind in ("assistant", "user"):
+        for block in (event.get("message") or {}).get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                calls[block.get("id")] = (block.get("name", ""), block.get("input") or {})
+            elif isinstance(block, dict) and block.get("type") == "tool_result" and block.get("tool_use_id") in calls:
+                step(*calls.pop(block["tool_use_id"]), block)
+    elif kind == "result" and not ended:
+        ended = True
+        say(ending(event))
+code = cli.wait()
+if not ended:
+    say({"type": "response.failed", "response": {"error": {
+        "code": "cli_exit", "message": f"Claude Code exited with code {code} without a result."}}})

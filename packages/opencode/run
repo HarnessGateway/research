@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""run: one turn of OpenCode. It reads the Responses request, starts OpenCode headless (`opencode run --format
+json`), and prints what it does as Responses output: its words, each command it ran and each file it wrote as an
+output item, and the stream's last event, with the tokens the turn used."""
+import json
+import os
+import signal
+import subprocess
+import uuid
+
+HARNESS, TURN, STATE = os.environ["HG_HARNESS"], os.environ["HG_TURN"], os.environ["HG_STATE"]
+SESSION = os.path.join(STATE, "session")               # OpenCode's own id for this session
+# The provider APIs OpenCode can speak here, the preferred first: the AI SDK package for each, and its base URL.
+APIS = {"HG_PROVIDER_ANTHROPIC": ("@ai-sdk/anthropic", "/v1"),
+        "HG_PROVIDER_OPENAI_CHAT": ("@ai-sdk/openai-compatible", "")}
+
+
+def say(line):
+    print(json.dumps(line), flush=True)
+
+
+def step(part):
+    """One tool call OpenCode finished, as the output item of the kind of step it was."""
+    state = part.get("state") or {}
+    given, output = state.get("input") or {}, str(state.get("output", ""))
+    call = {"call_id": f"call_{uuid.uuid4().hex}", "status": "completed"}
+    if part["tool"] == "bash":
+        say({"type": "shell_call", **call, "action": {"commands": [given.get("command", "")]}})
+        say({"type": "shell_call_output", **call, "output": [{
+            "stdout": output, "stderr": "",
+            "outcome": {"type": "exit", "exit_code": int((state.get("metadata") or {}).get("exit") or 0)}}]})
+    elif part["tool"] == "write":
+        say({"type": "apply_patch_call", **call, "operation": {
+            "type": "create_file", "path": given.get("filePath", ""),
+            "diff": "".join(f"+{line}\n" for line in str(given.get("content", "")).splitlines())}})
+        say({"type": "apply_patch_call_output", **call})
+    else:
+        say({"type": "custom_tool_call", "call_id": call["call_id"], "name": part["tool"], "input": json.dumps(given)})
+        say({"type": "custom_tool_call_output", **call, "output": output})
+
+
+with open(os.path.join(TURN, "request.json"), encoding="utf-8") as file:
+    request = json.load(file)
+spoken = next((name for name in APIS if name in os.environ), None)
+if spoken is None:
+    say({"type": "response.failed", "response": {"error": {"code": "no_provider", "message": (
+        "OpenCode needs a provider that speaks the Anthropic or the OpenAI Chat API: name one, as "
+        "opencode/provider/model.")}}})
+    raise SystemExit
+given = request["input"]
+prompt = given if isinstance(given, str) else "\n\n".join(
+    part["text"] for item in given if item.get("role") == "user" and isinstance(item.get("content"), list)
+    for part in item["content"] if part.get("type") == "input_text")
+model, (package, suffix) = os.environ["HG_MODEL"], APIS[spoken]
+config = {"model": f"hg/{model}", "small_model": f"hg/{model}", "autoupdate": False, "share": "disabled",
+          "provider": {"hg": {"npm": package, "name": "hg", "models": {model: {"name": model, "tool_call": True}},
+                              "options": {"baseURL": os.environ[spoken] + suffix, "apiKey": "{env:HG_PROVIDER_KEY}"}}}}
+if request.get("instructions"):                        # OpenCode takes instructions as files: this request's, anew
+    os.makedirs(STATE, exist_ok=True)
+    with open(os.path.join(STATE, "instructions.md"), "w", encoding="utf-8") as file:
+        file.write(request["instructions"])
+    config["instructions"] = [os.path.join(STATE, "instructions.md")]
+env = {**os.environ, "OPENCODE_CONFIG_CONTENT": json.dumps(config), "OPENCODE_DISABLE_AUTOUPDATE": "1",
+       "OPENCODE_DISABLE_MODELS_FETCH": "1"}
+args = [os.path.join(HARNESS, "tools", "node_modules", ".bin", "opencode"), "run", "--format", "json", "--auto",
+        "-m", f"hg/{model}"]
+if os.path.exists(SESSION):
+    args += ["--session", open(SESSION, encoding="utf-8").read()]
+signal.signal(signal.SIGTERM, lambda *_: None)         # a stopped turn: outlive OpenCode, so it saves its session
+cli = subprocess.Popen([*args, prompt], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True,
+                       errors="replace")
+usage, error = {"input_tokens": 0, "output_tokens": 0, "input_tokens_details": {"cached_tokens": 0}}, None
+for line in cli.stdout:
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    kind, part = event.get("type"), event.get("part") or {}
+    if event.get("sessionID") and not os.path.exists(SESSION):
+        os.makedirs(STATE, exist_ok=True)
+        with open(SESSION, "w", encoding="utf-8") as file:
+            file.write(event["sessionID"])             # kept at once: a stopped turn is continued too
+    if kind == "text":
+        say({"type": "response.output_text.delta", "delta": part.get("text", "")})
+    elif kind == "reasoning":
+        say({"type": "response.reasoning_summary_text.delta", "delta": part.get("text", "")})
+    elif kind == "tool_use":
+        step(part)
+    elif kind == "step_finish":
+        tokens = part.get("tokens") or {}
+        cached = (tokens.get("cache") or {}).get("read", 0)
+        usage["input_tokens"] += tokens.get("input", 0) + cached
+        usage["output_tokens"] += tokens.get("output", 0)
+        usage["input_tokens_details"]["cached_tokens"] += cached
+    elif kind == "error":
+        error = ((event.get("error") or {}).get("data") or {}).get("message") or "OpenCode reported an error"
+code = cli.wait()
+if error or code != 0:
+    say({"type": "response.failed", "response": {"usage": usage, "error": {
+        "code": "cli_error", "message": str(error or f"OpenCode exited with code {code}.")[:2000]}}})
+else:
+    say({"type": "response.completed", "response": {"usage": usage}})
