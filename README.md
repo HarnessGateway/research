@@ -64,7 +64,8 @@ harness, and change harness in the middle of a session. `core.py`
 **[7. FDE.](7-fde)** *Can one harness package build every other harness package?*
 I had written three packages by hand, the same way each time. The method was stage 1 and the contract was stage
 5, both already written down. So I gave those two pages to an agent, as a harness package of its own, and asked
-it for a fourth. `build.py`, and the [fde](packages/fde) package
+it for a fourth. Its own `run` takes the Responses API as far as its CLI goes, because every package it builds
+is written with the shape of it. `build.py`, and the [fde](packages/fde) package
 
 ## What it comes to
 

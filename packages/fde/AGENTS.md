@@ -20,7 +20,10 @@ Asked for a harness package for an agent CLI, by name:
    the base URLs are in `$HG_PROVIDER_ANTHROPIC`, `$HG_PROVIDER_OPENAI_RESPONSES` and `$HG_PROVIDER_OPENAI_CHAT`,
    the key in `$HG_PROVIDER_KEY` and the model in `$HG_MODEL`. Keep what it printed: `run` is written from it.
 2. **Write `/work/<name>/install`**: a shell script, as the contract says.
-3. **Write `/work/<name>/run`**: Python 3, standard library only, with the shape of `/harness/run`.
+3. **Write `/work/<name>/run`**: Python 3, standard library only, with the shape of `/harness/run`. Give the CLI
+   every field of the request it has a flag or a setting for, and print each thing it does as the item that says
+   what it was: the contract's two tables name them. What the CLI has no use for, leave alone, and say so in the
+   turn's log.
 4. **Write `/work/<name>/README.md`**: the nine answers and where each came from, the provider APIs the CLI
    speaks, and which fields of the request `run` honours.
 5. **Hand over**: end your reply with `<name> is ready in /work/<name>`, the CLI's version, and the APIs it speaks.
