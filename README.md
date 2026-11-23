@@ -2,8 +2,20 @@
 
 I build agents for a living, as a forward deployed engineer: I go to where the work is, take an agent harness CLI
 (Claude Code, Codex, OpenCode, whichever fits), and build an agent around it that does a real job for a real team.
-Anthropic's [Claude Forward Deployed Engineer path](https://anthropic-partners.skilljar.com/path/claude-fde)
-describes largely this kind of work, for one harness. Of its eleven courses, it is courses 6 to 9 specifically:
+I do it across every harness, because I am harness agnostic: the right harness is the one that suits the job,
+and that changes from job to job and from month to month.
+
+This repository began as an attempt to capture the essence of that work. It became the story of how I arrived at
+my platform, because every time I wrote down what I do by hand, the next question was how to stop doing it by
+hand. Each stage is one question I asked, the smallest thing that answered it, and the question it left me with.
+Each is a folder with one page that explains it and one file that does it. Everything in them was run.
+
+## A course that came later
+
+After I had done this work, Anthropic released its
+[Claude Forward Deployed Engineer path](https://anthropic-partners.skilljar.com/path/claude-fde). It played no
+part in what is told here. But when I saw it, it tied in nicely: it describes largely the same kind of work,
+for one harness. Of its eleven courses, it is courses 6 to 9 specifically:
 
 | | Course | What it teaches |
 |---|---|---|
@@ -12,13 +24,7 @@ describes largely this kind of work, for one harness. Of its eleven courses, it 
 | 8 | Introduction to Model Context Protocol | Connecting the agent to the customer's systems |
 | 9 | Introduction to agent skills | Packaging what works so the customer's team can reuse it |
 
-I do that work across every harness, because I am harness agnostic: the right harness is the one that suits the
-job, and that changes from job to job and from month to month.
-
-This repository began as an attempt to capture the essence of that work. It became the story of how I arrived at
-my platform, because every time I wrote down what I do by hand, the next question was how to stop doing it by
-hand. Each stage is one question I asked, the smallest thing that answered it, and the question it left me with.
-Each is a folder with one page that explains it and one file that does it. Everything in them was run.
+What those four courses teach for Claude Code is what this repository does for any harness.
 
 ## The story
 
