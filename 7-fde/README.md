@@ -72,31 +72,44 @@ It is one Responses request to `fde/deepseek/deepseek-flash`, like any other.
 
 ## What I ran
 
-I asked it for Pi, a CLI I had written no package for. In under twelve minutes it:
+I asked it for Pi, a CLI I had written no package for. I asked twice.
 
-1. installed Pi 1.6.0 and read its help and its documentation,
-2. ran it headless against the provider, over two different APIs, and kept what it printed,
-3. wrote `install`, `run` (256 lines) and a `README.md` giving the nine answers and where each came from,
-4. handed over: *pi is ready in /work/pi*.
+**The first time**, its `run` was the Claude Code package's. In under twelve minutes it installed Pi 1.6.0, read
+its help and its documentation, ran it headless against the provider over two APIs, and wrote `install`, a `run`
+of 256 lines and a `README.md` giving the nine answers and where each came from. The package ran on the core
+untouched. It took of a request what its builder's `run` showed it, and a little more: a prompt, instructions,
+an effort.
 
-[packages/pi](../packages/pi) is that package, exactly as it wrote it. I ran it on the core without touching it:
+**Then I gave it a `run` of its own**, and tried a request for each row of the two tables above: a `developer`
+message and an effort; a continued turn with new instructions; a schema for the answer; a tool server with a
+token, beside one that is not there; a search and a page; an image and a file inside the request; and no tools.
+Each did what its row says. I held every line it printed to HarnessGateway's own rule for a printed line, and
+none was refused; the responses the core made of them are what the OpenAI SDK's own model of a response
+describes.
+
+**The second time** I asked for Pi, it took 25 minutes, because it tried more. It wrote itself a tool server to
+see how Pi takes one, gave Pi an image and a file, ran a command that fails and one that runs out of time, and
+stopped a turn to see the session kept. [packages/pi](../packages/pi) is that package, exactly as it wrote it:
+a `run` of 562 lines, and a README that says what it honours and what it leaves alone. I ran it on the core
+without touching it:
 
 | Request | Answer |
 |---|---|
-| `pi`: create a file holding one word | wrote the file |
-| `pi`, continuing, with new instructions | named the word, checked it with a command, and obeyed the instructions |
-| `codex`, on the same session | appended a line to the file Pi wrote |
-| `pi`, again | printed the file, and said it held a line it had not written |
+| `pi`: create a file, then run a command that exits 3 | wrote the file; the response has the command's exit code, 3 |
+| `pi`, continuing, with an effort: edit the file | `update_file`, with the diff of the one line |
+| `pi`, with a `developer` message, on a new turn and on a continued one | obeyed it both times |
+| `pi`, with a tool server and a token, beside a server that is not there | listed the first server's tools, said the second did not connect, and called the tool |
+| `pi`, with an image and a file inside the request | read the word in the file |
+| `codex`, on the same session, then `pi` again | Codex appended a line; Pi printed the file, and said it held a line it had not written |
+| `pi`, with `tool_choice: "none"` | answered, and ran nothing |
 
-All four responses are what the OpenAI SDK's own model of a response describes. The last answer is stage 4's
-finding again, seen from inside: a harness is not told what another did.
+Every response is what the OpenAI SDK's own model of a response describes. Two things did not go as they
+should. Once, on a continued turn with several steps, Pi left a `developer` message unheeded. And the package
+gives Pi its own `README.md` as instructions on every turn: it copied that from its builder, whose `run` gives
+itself the pages beside it. A builder's own habits are copied with its good ones.
 
-That was with the Claude Code package's `run`. When I gave it a `run` of its own, I tried a request for each row
-of the two tables above: a `developer` message and an effort; a continued turn with new instructions; a schema
-for the answer; a tool server with a token, beside one that is not there; a search and a page; an image and a
-file inside the request; and no tools. Each did what its row says. I held every line it printed to
-HarnessGateway's own rule for a printed line, and none was refused; the responses the core made of them are what
-the OpenAI SDK's own model of a response describes.
+The answer about the line it had not written is stage 4's finding again, seen from inside: a harness is not told
+what another did.
 
 ## Where the story ends
 
