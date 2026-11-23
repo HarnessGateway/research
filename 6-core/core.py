@@ -72,7 +72,8 @@ def installed(harness):
 
 def gather(lines):
     """What a run printed, as the items of the response's output and the line it ended with. A whole item is
-    given an id; pieces of text are gathered into the message, or the reasoning, they belong to."""
+    given an id; pieces of text are gathered into the message, or the reasoning, they belong to; an item that
+    was printed as it began and again as it ended is taken as it ended."""
     items, ending, flowing = [], None, None
     for text in lines:
         line = json.loads(text) if text.strip() else {"type": ""}
@@ -84,6 +85,8 @@ def gather(lines):
             if flowing != kind:
                 items.append({"id": f"item_{uuid.uuid4().hex}", **shape, field: [{**part, "text": ""}]})
             items[-1][field][0]["text"] += line["delta"]
+        elif kind == "response.output_item.done":
+            items.append(line["item"])
         elif kind and not kind.startswith("response."):
             items.append({"id": f"item_{uuid.uuid4().hex}", **line})
         flowing = kind

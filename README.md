@@ -57,7 +57,7 @@ Responses output. Three harnesses, one request, one kind of answer. `respond.sh`
 [packages](packages)
 
 **[6. Core.](6-core)** *What is the smallest platform that does all of that?*
-168 lines. A Responses request comes in, `model` names a harness and a provider, the package runs in the
+171 lines. A Responses request comes in, `model` names a harness and a provider, the package runs in the
 container on the session's two folders, and a Responses response goes back. Any OpenAI client can drive any
 harness, and change harness in the middle of a session. `core.py`
 

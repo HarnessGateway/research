@@ -6,7 +6,7 @@ it, so I put it behind HTTP.
 
 ## The file
 
-[core.py](core.py) is 168 lines of standard library, and it is the whole of the idea:
+[core.py](core.py) is 171 lines of standard library, and it is the whole of the idea:
 
 ```sh
 python3 core.py          # http://127.0.0.1:8600/v1
@@ -31,7 +31,7 @@ and with what: `harness/provider/model`.
 | 2 | `previous_response_id` finds the session, or a new one begins: two folders, `mind` and `work` | stage 4 |
 | 3 | The package is installed, once: a copy of its folder that its `install` has run in. After changing a package, delete its copy under `data/installs` | stage 5 |
 | 4 | The request is written to a file, and the package's `run` is started in the container | stages 3 and 5 |
-| 5 | What `run` printed becomes the response: items are given ids, pieces of text are gathered into a message | stage 5 |
+| 5 | What `run` printed becomes the response: items are given ids, pieces of text are gathered into a message, and an item that began and ended is taken as it ended | stage 5 |
 | 6 | The response is kept, so that the next request can continue from it | |
 
 ## What I ran
