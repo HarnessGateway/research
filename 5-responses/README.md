@@ -58,12 +58,22 @@ the version it got. It is given no provider and no key. After it has run, the fo
 
 ### What run does with the request
 
-- `input` is the task: a string, or a list of items whose `user` messages hold `input_text` parts.
-- `instructions` is the CLI's system prompt for this turn. It must reach the CLI on a continued session too.
-- Any other field of the request the CLI has a flag or a setting for may be honoured. One it has no use for is
-  left alone.
+A request is the whole of the Responses API's, as it was sent. `run` gives its CLI every field the CLI has a flag
+or a setting for:
+
+| In the request | What a package does with it |
+|---|---|
+| `input` | The task. A string, or a list of messages: from the person (`user`), from whoever built the application (`developer`, `system`), and what the agent said earlier (`assistant`). A message is a string, or parts: `input_text`; `input_image`, with an `image_url`; `input_file`, with `file_data` and a `filename`, or a `file_url` |
+| `instructions` | The CLI's system prompt for this turn. It must reach the CLI on a continued session too. What a `developer` or a `system` message says is instructions as well |
+| `reasoning` | `effort`: how hard the CLI thinks |
+| `text` | `format`, of type `json_schema`: the schema its answer must fit |
+| `tools` | Of type `mcp`: a tool server to connect the CLI to, at `server_url`, with its `headers` and its `authorization` token |
+| `tool_choice` | `none`: the CLI answers, and does nothing |
+
+- A field the CLI has no use for is left alone, and `run` says so on standard error: nothing is ignored unsaid.
 - It starts the CLI on the provider: with the base URL of the first API the CLI speaks, the key and the model.
   When the provider speaks none of them, it ends the turn as failed and says which APIs the CLI needs.
+- When `previous.json` says the turn before did not complete, it tells the CLI so.
 
 ### What run prints
 
@@ -77,21 +87,31 @@ line is a piece of an OpenAI response, in one of three forms:
 ```
 
 1. **An output item, whole**: any item of the Responses API, without an `id`.
-2. **A piece of text as it arrives**: `response.output_text.delta` for what the agent says, and
-   `response.reasoning_summary_text.delta` for what it thinks.
-3. **The last line**: how the run ended. `response.completed`; or `response.failed` with
+2. **A stream event**, for what arrives in pieces.
+   - A piece of text: `response.output_text.delta` for what the agent says, and
+     `response.reasoning_summary_text.delta` for what it thinks. Each goes on a message, or a reasoning, that is
+     kept for it until anything else is printed.
+   - An item that begins and ends: `response.output_item.added` with `{"item": {…}}`, the item with an `id` of
+     your making and `"status": "in_progress"`; then `response.output_item.done` with the item as it ended.
+3. **The last line**: how the run ended. `response.completed`; `response.incomplete` with
+   `{"response": {"incomplete_details": {"reason": "max_output_tokens"}}}`; or `response.failed` with
    `{"response": {"error": {"code": "…", "message": "…"}}}`, the message saying what a person can do about it.
-   `usage` is optional in both, and may carry `input_tokens_details.cached_tokens`.
+   `usage` is optional in each, and may carry `input_tokens_details` (`cached_tokens`, `cache_write_tokens`) and
+   `output_tokens_details` (`reasoning_tokens`).
 
-What an agent does, as output items:
+What an agent does, as output items. A call is printed when the agent makes it, and what came of it when it
+returns, with the CLI's own id for the call as the `call_id` of both:
 
 | The agent | The item |
 |---|---|
 | Says something | `message`: `{"type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "…", "annotations": []}]}`, or text deltas |
 | Thinks | `reasoning`: `{"type": "reasoning", "summary": [{"type": "summary_text", "text": "…"}]}`, or reasoning deltas |
-| Runs a command | `shell_call`, then `shell_call_output` with the same `call_id`: `{"type": "shell_call_output", "call_id": "c1", "status": "completed", "output": [{"stdout": "…", "stderr": "", "outcome": {"type": "exit", "exit_code": 0}}]}` |
-| Creates, changes or deletes a file | `apply_patch_call` with `"operation": {"type": "create_file" \| "update_file" \| "delete_file", "path": "…", "diff": "…"}`, then `apply_patch_call_output` with the same `call_id` |
-| Uses any other tool | `custom_tool_call` with `name` and `input` (a string), then `custom_tool_call_output` with the same `call_id` and `output` |
+| Runs a command | `shell_call`, then `shell_call_output`: `{"type": "shell_call_output", "call_id": "c1", "status": "completed", "output": [{"stdout": "…", "stderr": "", "outcome": {"type": "exit", "exit_code": 0}}]}`. The exit code is the command's own; a command that ran out of time has `"outcome": {"type": "timeout"}` |
+| Creates, changes or deletes a file | `apply_patch_call` with `"operation": {"type": "create_file" \| "update_file" \| "delete_file", "path": "…", "diff": "…"}`, the diff saying what changed, then `apply_patch_call_output`, with `"status": "failed"` and an `output` when it could not |
+| Connects to a tool server | `mcp_list_tools`: `{"type": "mcp_list_tools", "server_label": "docs", "tools": [{"name": "lookup", "input_schema": {}}]}`, with an `error` when it did not connect |
+| Calls a tool of a tool server | `mcp_call`, begun and ended: `{"type": "mcp_call", "id": "c2", "server_label": "docs", "name": "lookup", "arguments": "{…}", "status": "completed", "output": "…"}`, or `"status": "failed"` with `"error": {"type": "mcp_tool_execution_error", "content": "…"}` |
+| Searches the web, or opens a page | `web_search_call`, begun and ended: `{"type": "web_search_call", "id": "c3", "status": "completed", "action": {"type": "search", "query": "…", "sources": [{"type": "url", "url": "…"}]}}`, or `"action": {"type": "open_page", "url": "…"}` |
+| Uses any other tool | `custom_tool_call` with `name` and `input` (a string), then `custom_tool_call_output` with the same `call_id`, a `status` and `output` |
 
 ### Sessions and stopping
 
@@ -104,7 +124,9 @@ What an agent does, as output items:
 
 [claude-code](../packages/claude-code/run), [codex](../packages/codex/run) and
 [opencode](../packages/opencode/run). Each `run` is about a hundred lines: its harness's nine answers from stage
-2, written down as a program. What each turns into what:
+2, written down as a program. They take the slice of the API the work began with: `input` as text,
+`instructions`, and five kinds of item. [Stage 7](../7-fde) takes one of them as far as its CLI goes. What each
+turns into what:
 
 | The agent | Claude Code prints | Codex prints | OpenCode prints | The package prints |
 |---|---|---|---|---|
