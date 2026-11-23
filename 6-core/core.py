@@ -148,6 +148,8 @@ class Api(BaseHTTPRequestHandler):
         try:
             if self.path != "/v1/responses":
                 raise Refused(f"there is nothing at {self.path}", status=404)
+            if self.headers.get("Content-Type", "").partition(";")[0].strip() != "application/json":
+                raise Refused("send the request as application/json")     # which another site's page cannot do unasked
             status, answer = 200, respond(json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0))))
         except (Refused, ValueError) as refusal:       # ValueError: a body, or a printed line, that is not JSON
             status = getattr(refusal, "status", 400)
