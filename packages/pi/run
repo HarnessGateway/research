@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""run: one turn of Pi (the coding agent CLI). It reads the Responses request, starts Pi headless on the
+session's provider, and prints what Pi does as Responses output: its words and its thinking as they arrive,
+each step it took as an output item, and the stream's last event with the tokens the turn used."""
+import difflib
+import json
+import os
+import signal
+import subprocess
+import uuid
+
+HARNESS, TURN, STATE = os.environ["HG_HARNESS"], os.environ["HG_TURN"], os.environ["HG_STATE"]
+AGENT_DIR = os.path.join(os.environ["HOME"], ".pi", "agent")   # where Pi keeps its own memory
+SESSION = os.path.join(STATE, "session")                       # Pi's own id for this session
+INSTRUCTIONS = os.path.join(STATE, "instructions.md")          # this turn's instructions, as Pi reads them
+
+# The APIs Pi speaks, in the order this package prefers them, and the provider variable each one comes from.
+APIS = [("HG_PROVIDER_ANTHROPIC", "anthropic-messages", "the Anthropic Messages API"),
+        ("HG_PROVIDER_OPENAI_RESPONSES", "openai-responses", "the OpenAI Responses API"),
+        ("HG_PROVIDER_OPENAI_CHAT", "openai-completions", "the OpenAI Chat Completions API"),
+        ("HG_PROVIDER_GEMINI", "google-generative-ai", "the Google Generative AI API")]
+
+
+def say(line):
+    print(json.dumps(line), flush=True)
+
+
+def text_of(content):
+    if isinstance(content, str):
+        return content
+    return "\n".join(block.get("text", "") for block in content or []
+                     if isinstance(block, dict) and block.get("type") == "text")
+
+
+def prompt_of(given):
+    """The task: a string, or the text of the user messages in a list of input items."""
+    if isinstance(given, str):
+        return given
+    parts = []
+    for item in given or []:
+        if not isinstance(item, dict) or item.get("role") != "user":
+            continue
+        content = item.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            parts.extend(part.get("text", "") for part in content
+                         if isinstance(part, dict) and part.get("type") in ("input_text", "text"))
+    return "\n\n".join(part for part in parts if part)
+
+
+def read_text(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as file:
+            return file.read(1_000_000)
+    except OSError:
+        return None
+
+
+def added(text):
+    """A create_file diff: every line of the new file, marked as added."""
+    return "".join(f"+{line}\n" for line in str(text).splitlines())
+
+
+def changed(path, old, new):
+    """An update_file diff: what changed, as a unified diff without the leading file headers."""
+    lines = list(difflib.unified_diff(str(old).splitlines(), str(new).splitlines(),
+                                      fromfile=path, tofile=path, lineterm="", n=3))
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def edit_diff(path, edits):
+    pieces = [changed(path, edit.get("oldText", ""), edit.get("newText", ""))
+              for edit in edits or [] if isinstance(edit, dict)]
+    return "\n".join(piece for piece in pieces if piece)
+
+
+def explain(message, api):
+    """Turn the CLI's error into something a person can act on."""
+    low = message.lower()
+    if any(word in low for word in ("401", "authentication", "api key", "unauthorized", "403")):
+        return f"{message} Check HG_PROVIDER_KEY, and that HG_MODEL names a model this provider serves."
+    if any(word in low for word in ("invalid url", "enotfound", "econnrefused", "getaddrinfo",
+                                    "fetch failed", "network", "connection")):
+        return f"{message} Check the base URL for {api}: Pi cannot reach it."
+    return message
+
+
+def write_models_json(path, base, api, model_id, reasoning, max_tokens):
+    """Point Pi at this session's provider: a custom provider with exactly the one model to call."""
+    model = {"id": model_id, "name": model_id, "reasoning": reasoning, "input": ["text"],
+             "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+             "contextWindow": 128000, "maxTokens": max_tokens}
+    document = {"providers": {"hg": {"baseUrl": base, "api": api, "apiKey": "$HG_PROVIDER_KEY",
+                                     "models": [model]}}}
+    scratch = path + ".tmp"
+    with open(scratch, "w", encoding="utf-8") as file:
+        json.dump(document, file, indent=2)
+    os.replace(scratch, path)
+
+
+with open(os.path.join(TURN, "request.json"), encoding="utf-8") as file:
+    request = json.load(file)
+
+chosen = next(((os.environ[var], api, name) for var, api, name in APIS if os.environ.get(var)), None)
+if not chosen:                       # Pi speaks several APIs; the provider must speak one of them
+    say({"type": "response.failed", "response": {"error": {"code": "no_provider", "message": (
+        "Pi needs a provider that speaks one of: the Anthropic Messages API (HG_PROVIDER_ANTHROPIC), the "
+        "OpenAI Responses API (HG_PROVIDER_OPENAI_RESPONSES), the OpenAI Chat Completions API "
+        "(HG_PROVIDER_OPENAI_CHAT), or the Google Generative AI API (HG_PROVIDER_GEMINI).")}}})
+    raise SystemExit
+base, api, api_name = chosen
+
+prompt = prompt_of(request["input"])
+instructions = request.get("instructions") or ""
+
+effort = (request.get("reasoning") or {}).get("effort") if isinstance(request.get("reasoning"), dict) else None
+reasoning = isinstance(effort, str) and effort.lower() not in ("", "none", "off")
+max_tokens = request.get("max_output_tokens") if isinstance(request.get("max_output_tokens"), int) else 8192
+max_tokens = max_tokens if max_tokens > 0 else 8192
+
+os.makedirs(AGENT_DIR, exist_ok=True)
+os.makedirs(STATE, exist_ok=True)
+write_models_json(os.path.join(AGENT_DIR, "models.json"), base, api, os.environ["HG_MODEL"],
+                  reasoning, max_tokens)
+if instructions:
+    with open(INSTRUCTIONS, "w", encoding="utf-8") as file:
+        file.write(instructions)
+elif os.path.exists(INSTRUCTIONS):
+    os.unlink(INSTRUCTIONS)
+
+session_id = read_text(SESSION) if os.path.exists(SESSION) else None
+session_id = (session_id or "").strip() or f"hg-{uuid.uuid4().hex}"
+with open(SESSION + ".tmp", "w", encoding="utf-8") as file:   # kept before the first word: a stopped
+    file.write(session_id)                                     # turn is still continued
+os.replace(SESSION + ".tmp", SESSION)
+
+args = [os.path.join(HARNESS, "tools", "node_modules", ".bin", "pi"),
+        "-p", "--mode", "json", "--session-id", session_id,
+        "--provider", "hg", "--model", os.environ["HG_MODEL"],
+        "--no-approve",         # do not load project-local, trust-gated resources: the same turn every time
+        "--offline", "--no-mcp"]  # nothing fetched or connected except the provider
+if instructions:
+    args += ["--append-system-prompt", INSTRUCTIONS]   # reaches a continued session on every turn
+if reasoning:
+    args += ["--thinking", effort]
+env = {**os.environ, "PI_CODING_AGENT_DIR": AGENT_DIR, "PI_OFFLINE": "1",
+       "PI_SKIP_VERSION_CHECK": "1", "PI_TELEMETRY": "0"}
+signal.signal(signal.SIGTERM, lambda *_: None)   # a stopped turn: outlive Pi, so it saves its session
+
+try:
+    cli = subprocess.Popen(args, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                           text=True, encoding="utf-8", errors="replace", bufsize=1)
+except OSError as error:
+    say({"type": "response.failed", "response": {"error": {"code": "cli_missing", "message": (
+        f"Pi could not be started from {args[0]}: {error}. Run install first.")}}})
+    raise SystemExit
+try:
+    cli.stdin.write(prompt)
+    cli.stdin.close()
+except (BrokenPipeError, OSError):
+    pass
+
+calls, usage, failure, ended = {}, {"input": 0, "output": 0, "cache": 0}, None, False
+
+
+def ending():
+    counted = {"input_tokens": usage["input"] + usage["cache"], "output_tokens": usage["output"],
+               "input_tokens_details": {"cached_tokens": usage["cache"]}}
+    if failure:
+        return {"type": "response.failed", "response": {"usage": counted, "error": {
+            "code": "cli_error", "message": explain(failure, api_name)}}}
+    return {"type": "response.completed", "response": {"usage": counted}}
+
+
+for line in cli.stdout:
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    kind = event.get("type")
+    if kind == "session" and event.get("id"):
+        os.makedirs(STATE, exist_ok=True)
+        with open(SESSION + ".tmp", "w", encoding="utf-8") as file:
+            file.write(event["id"])            # kept at once: a stopped turn is continued too
+        os.replace(SESSION + ".tmp", SESSION)
+    elif kind == "message_update":             # Pi's words and thinking, as they arrive
+        update = event.get("assistantMessageEvent") or {}
+        if update.get("type") == "text_delta":
+            say({"type": "response.output_text.delta", "delta": update.get("delta", "")})
+        elif update.get("type") == "thinking_delta":
+            say({"type": "response.reasoning_summary_text.delta", "delta": update.get("delta", "")})
+    elif kind == "tool_execution_start":
+        call_id, name = event.get("toolCallId"), event.get("toolName") or ""
+        given = event.get("args") or {}
+        path = str(given.get("path", ""))
+        if name == "bash":
+            item = {"type": "shell_call", "call_id": call_id, "status": "completed",
+                    "action": {"commands": [str(given.get("command", ""))]}}
+            calls[call_id] = "shell"
+        elif name == "write":
+            old = read_text(path)
+            exists = old is not None
+            item = {"type": "apply_patch_call", "call_id": call_id, "status": "completed", "operation": {
+                "type": "update_file" if exists else "create_file", "path": path,
+                "diff": changed(path, old, given.get("content", "")) if exists
+                        else added(given.get("content", ""))}}
+            calls[call_id] = "patch"
+        elif name == "edit":
+            item = {"type": "apply_patch_call", "call_id": call_id, "status": "completed", "operation": {
+                "type": "update_file", "path": path, "diff": edit_diff(path, given.get("edits"))}}
+            calls[call_id] = "patch"
+        else:
+            item = {"type": "custom_tool_call", "call_id": call_id, "status": "completed",
+                    "name": name, "input": json.dumps(given)}
+            calls[call_id] = "custom"
+        if call_id:
+            say(item)
+    elif kind == "tool_execution_end":
+        call_id, form = event.get("toolCallId"), calls.pop(event.get("toolCallId"), "custom")
+        result = event.get("result") or {}
+        structured = result.get("structuredContent") if isinstance(result, dict) else None
+        if form == "shell":
+            merged = structured.get("output") if isinstance(structured, dict) else None
+            code = structured.get("exit_code") if isinstance(structured, dict) else None
+            say({"type": "shell_call_output", "call_id": call_id, "status": "completed", "output": [{
+                "stdout": text_of(merged if merged is not None else result.get("content")),
+                "stderr": "", "outcome": {"type": "exit",
+                                          "exit_code": code if isinstance(code, int)
+                                          else (1 if event.get("isError") else 0)}}]})
+        elif form == "patch":
+            say({"type": "apply_patch_call_output", "call_id": call_id, "status": "completed"})
+        else:
+            say({"type": "custom_tool_call_output", "call_id": call_id, "status": "completed",
+                 "output": text_of(result.get("content"))})
+    elif kind == "message_end":
+        message = event.get("message") or {}
+        if message.get("role") != "assistant":
+            continue
+        counted = message.get("usage") or {}
+        usage["input"] += int(counted.get("input", 0) or 0)
+        usage["output"] += int(counted.get("output", 0) or 0)
+        usage["cache"] += int(counted.get("cacheRead", 0) or 0) + int(counted.get("cacheWrite", 0) or 0)
+        if message.get("stopReason") == "error" and not failure:
+            failure = message.get("errorMessage") or "Pi reported an error."
+    elif kind == "agent_settled" and not ended:
+        ended = True
+        if event.get("aborted") and not failure:
+            failure = "The turn was stopped before Pi finished."
+        say(ending())
+code = cli.wait()
+if not ended:
+    ended = True
+    if not failure:
+        failure = f"Pi exited with code {code} without finishing."
+    say(ending())

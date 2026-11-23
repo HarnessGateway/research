@@ -1,0 +1,8 @@
+#!/bin/sh
+# install: Pi (the coding agent CLI) at a pinned version, by its makers' own method (npm), under $HG_HARNESS/tools.
+set -eu
+VERSION=1.6.0
+npm install --prefix "$HG_HARNESS/tools" --no-audit --no-fund --loglevel=error --ignore-scripts \
+  "@earendil-works/pi-coding-agent@$VERSION"
+got=$("$HG_HARNESS/tools/node_modules/.bin/pi" --version | tail -n 1)
+[ "$got" = "$VERSION" ] || { echo "installed Pi $got, and $VERSION was wanted" >&2; exit 1; }
