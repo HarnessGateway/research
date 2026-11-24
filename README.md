@@ -64,75 +64,21 @@ help, docs, or test.
 Run the harness on what you learned. Use each answer the way a program would, and watch how it behaves. Then
 test the edge cases: what it does when something is missing, wrong, refused, or stopped.
 
-The goal is to judge it as the backend of an agent in production: persistence, safety and security,
-observability, resilience, performance, and evaluation. The help and the documentation are both incomplete, so
-only what you have run is known.
+The goal is to judge it as the backend of an agent in production. The help and the documentation are both
+incomplete, so only what you have run is known.
 
 ### 7. Author the program
 
-Write the program that drives it. It reads one request, runs the harness with nobody there, and prints what
-happened. The request and the events are the same whatever the harness is, which is what lets one program stand
-in for another later.
-
-**The request** is one JSON object, on standard input:
-
-| Field | Is |
-|---|---|
-| `message` | What the person said |
-| `session` | The harness's own id for the conversation, from an earlier turn. Left out, a new one begins |
-
-**The events** are one JSON object a line, on standard output:
-
-| Event | Is |
-|---|---|
-| `{"type": "session", "id": "…"}` | The harness's own id for this conversation. Give it back to carry on |
-| `{"type": "step", "text": "…"}` | Something it did: a command, a file it changed |
-| `{"type": "text", "text": "…"}` | Something it said |
-| `{"type": "error", "text": "…"}` | Why it failed |
-
-A program has three parts. Five functions build the harness's command from the request, one for each
-primitive. `handle` turns each line the harness prints into events. Those six are different for every harness:
+Write the program that drives it: a request in, the harness run with nobody there, what happened out. It is six
+functions. Five build the harness's command, one for each primitive, and the sixth reads what it prints:
 
 ```python
 def as_input(message): ...         # input: the message, in the form the harness takes it
-def context(session): ...          # context: what it should know, and the conversation to carry on from
+def context(thread): ...           # context: what it should know, and the conversation to carry on from
 def model_interface(): ...         # model interface: endpoint, model, and reasoning
 def output(): ...                  # output: what it may act with, and every step as a line the program reads
 def control_flow(): ...            # control flow: run once with nobody there, bounded, and exit
-def handle(line): ...              # one line the harness printed, as the events above
-```
-
-The third part is the same for every harness. It installs the harness once, runs the command, and prints the
-events:
-
-```python
-import json
-import os
-import signal
-import subprocess
-import sys
-from pathlib import Path
-
-if __name__ == "__main__":
-    if not (TOOLS / ".installed").exists():              # installed once, at its pinned version
-        subprocess.run(["npm", "install", "--prefix", TOOLS, "--no-audit", "--no-fund", "--loglevel=error", PACKAGE],
-                       check=True, stdout=sys.stderr)
-        (TOOLS / ".installed").touch()
-    request = json.load(sys.stdin)
-    argv, env = command(request.get("session"), request["message"])
-    harness = subprocess.Popen(argv, env={**os.environ, **env}, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
-    signal.signal(signal.SIGTERM, lambda *_: harness.terminate())      # stopped from outside: it is passed on
-    told = False                                         # its session id is printed once
-    for printed in harness.stdout:
-        try:
-            events = list(handle(json.loads(printed)))
-        except ValueError:
-            continue                                     # not a line of JSON
-        for event in events:
-            if event["type"] != "session" or not told:
-                print(json.dumps(event), flush=True)
-            told = told or event["type"] == "session"
-    sys.exit(harness.wait())
+def handle(line): ...              # one line the harness printed, as what happened
 ```
 
 ## Worked examples
@@ -150,6 +96,31 @@ You are a helpful assistant in a chat.
 - Answer plainly and briefly. Lead with the answer.
 - You have a working folder. Use it when asked to make, change, or run something, and say what you did.
 - Do not say which program or model you run on. You are the assistant.
+```
+
+Every program is its own six functions, and then the same last block: install the harness once, run the
+command, print what `handle` makes of each line.
+
+```python
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+if __name__ == "__main__":
+    if not (TOOLS / ".installed").exists():              # installed once, at its pinned version
+        subprocess.run(["npm", "install", "--prefix", TOOLS, "--no-audit", "--no-fund", "--loglevel=error", PACKAGE],
+                       check=True, stdout=sys.stderr)
+        (TOOLS / ".installed").touch()
+    request = json.load(sys.stdin)
+    argv, env = command(request.get("thread"), request["message"])
+    harness = subprocess.Popen(argv, env={**os.environ, **env}, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
+    for printed in harness.stdout:
+        if printed.startswith(b"{"):                     # a line of JSON
+            for event in handle(json.loads(printed)):
+                print(json.dumps(event), flush=True)
+    sys.exit(harness.wait())
 ```
 
 ### Claude Code 2.1.325
@@ -171,24 +142,22 @@ ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic ANTHROPIC_AUTH_TOKEN=$DEEP
 ```
 
 Testing found: `--max-turns` is in the documentation and not in the help, and it works. A flag that takes a
-list swallows the prompt after it, hence the `--`. A continued session ignores new instructions until
-`--system-prompt-snapshot off`.
+list swallows the prompt after it, hence the `--`.
 
-Its program, [agent-claude-code.py](agent-claude-code.py). The five functions put the request into its command, and
-`handle` puts its output into the events. With the last block of step 7, this is the whole program:
+Its own part of [agent-claude-code.py](agent-claude-code.py):
 
 ```python
 NAME, PACKAGE = "claude-code", "@anthropic-ai/claude-code@2.1.325"  # its latest stable version, pinned
 MODEL = "deepseek-flash"
-TOOLS = Path(os.environ.get("TOOLS") or Path(__file__).resolve().parent / "agent" / "data" / "host" / "tools") / NAME
+TOOLS = Path(__file__).resolve().parent / "agent/data/tools" / f"{NAME}-{sys.platform}"
 
 
 def as_input(message):                                   # input: the message, as the prompt argument
     return ["--", message]
 
 
-def context(session):                                    # context: AGENTS.md is read from the working folder unasked.
-    return ["--resume", session] if session else []      # This is the conversation so far
+def context(thread):                                     # context: AGENTS.md is read from the working folder unasked.
+    return ["--resume", thread] if thread else []        # This is the conversation so far
 
 
 def model_interface():                                   # model interface: the model is a flag, the endpoint and key
@@ -205,23 +174,22 @@ def control_flow():                                      # control flow: one req
     return ["-p", "--max-turns", "50"]
 
 
-def command(session, message):                           # the one-liner, from its five parts
+def command(thread, message):                            # the one-liner, from its five parts
     model, env = model_interface()
-    return [TOOLS / "node_modules/.bin/claude", *control_flow(), *context(session), *model, *output(),
+    return [TOOLS / "node_modules/.bin/claude", *control_flow(), *context(thread), *model, *output(),
             *as_input(message)], env
 
 
-def handle(line):                                        # output: one line it printed, as the events of the request
+def handle(line):                                        # output: one line it printed, as events
     if line.get("subtype") == "init":
-        yield {"type": "session", "id": line["session_id"]}
+        yield {"type": "thread", "id": line["session_id"]}
     if line.get("type") == "assistant":
         for block in line["message"]["content"]:
             if block["type"] == "text":
                 yield {"type": "text", "text": block["text"]}
             if block["type"] == "tool_use":
-                given = block["input"]
-                yield {"type": "step", "text": f"$ {given['command']}" if "command" in given
-                       else f"{block['name']} {given.get('file_path', '')}"}
+                yield {"type": "step", "text": block["input"].get("command") or block["input"].get("file_path")
+                       or block["name"]}
     if line.get("type") == "result" and line.get("is_error"):
         yield {"type": "error", "text": str(line.get("result") or line.get("subtype"))}
 ```
@@ -243,16 +211,14 @@ codex exec --skip-git-repo-check -c model_provider=deepseek \
 ```
 
 Testing found: its own sandbox cannot start inside a container, so there it must be bypassed and the
-container is the sandbox. Instructions given on a continued session are dropped without a word. A project's
-hooks do not run until the project is trusted.
+container is the sandbox. A project's hooks do not run until the project is trusted.
 
-Its program, [agent-codex.py](agent-codex.py). The five functions put the request into its command, and
-`handle` puts its output into the events. With the last block of step 7, this is the whole program:
+Its own part of [agent-codex.py](agent-codex.py):
 
 ```python
 NAME, PACKAGE = "codex", "@openai/codex@0.171.0"         # its latest stable version, pinned
 MODEL = "deepseek-flash"
-TOOLS = Path(os.environ.get("TOOLS") or Path(__file__).resolve().parent / "agent" / "data" / "host" / "tools") / NAME
+TOOLS = Path(__file__).resolve().parent / "agent/data/tools" / f"{NAME}-{sys.platform}"
 PROVIDER = ('model_providers.deepseek={name="DeepSeek",base_url="https://api.deepseek.com/v1",'
             'env_key="DEEPSEEK_API_KEY",wire_api="responses"}')
 
@@ -261,8 +227,8 @@ def as_input(message):                                   # input: the message, a
     return ["--", message]
 
 
-def context(session):                                    # context: AGENTS.md is read from the working folder unasked.
-    return ["resume", session] if session else []        # This is the conversation so far
+def context(thread):                                     # context: AGENTS.md is read from the working folder unasked.
+    return ["resume", thread] if thread else []          # This is the conversation so far
 
 
 def model_interface():                                   # model interface: the provider is a setting, the model a
@@ -277,22 +243,22 @@ def control_flow():                                      # control flow: one req
     return ["exec"]
 
 
-def command(session, message):                           # the one-liner, from its five parts
+def command(thread, message):                            # the one-liner, from its five parts
     model, env = model_interface()
-    return [TOOLS / "node_modules/.bin/codex", *control_flow(), *context(session), "--skip-git-repo-check", *model,
+    return [TOOLS / "node_modules/.bin/codex", *control_flow(), *context(thread), "--skip-git-repo-check", *model,
             *output(), *as_input(message)], env
 
 
-def handle(line):                                        # output: one line it printed, as the events of the request
+def handle(line):                                        # output: one line it printed, as events
     item = line.get("item") or {}
     if line["type"] == "thread.started":
-        yield {"type": "session", "id": line["thread_id"]}
+        yield {"type": "thread", "id": line["thread_id"]}
     if line["type"] == "item.completed" and item["type"] == "agent_message":
         yield {"type": "text", "text": item["text"]}
     if line["type"] == "item.completed" and item["type"] == "command_execution":
-        yield {"type": "step", "text": f"$ {item['command']}"}
+        yield {"type": "step", "text": item["command"]}
     if line["type"] == "item.completed" and item["type"] == "file_change":
-        yield {"type": "step", "text": "edit " + ", ".join(change["path"] for change in item["changes"])}
+        yield {"type": "step", "text": ", ".join(change["path"] for change in item["changes"])}
     if line["type"] == "turn.failed":
         yield {"type": "error", "text": line["error"]["message"]}
 ```
@@ -315,21 +281,20 @@ Testing found: it takes its working folder from `$PWD`, not from where it is sta
 leads with a newer major version than the one that installs. A model name it does not know crashes it with
 `e.split is not a function`.
 
-Its program, [agent-opencode.py](agent-opencode.py). The five functions put the request into its command, and
-`handle` puts its output into the events. With the last block of step 7, this is the whole program:
+Its own part of [agent-opencode.py](agent-opencode.py):
 
 ```python
 NAME, PACKAGE = "opencode", "opencode-ai@1.19.6"         # its latest stable version, pinned
 MODEL = "deepseek-flash"
-TOOLS = Path(os.environ.get("TOOLS") or Path(__file__).resolve().parent / "agent" / "data" / "host" / "tools") / NAME
+TOOLS = Path(__file__).resolve().parent / "agent/data/tools" / f"{NAME}-{sys.platform}"
 
 
 def as_input(message):                                   # input: the message, as the prompt argument
     return ["--", message]
 
 
-def context(session):                                    # context: AGENTS.md is read from the working folder unasked.
-    return ["--session", session] if session else []     # This is the conversation so far
+def context(thread):                                     # context: AGENTS.md is read from the working folder unasked.
+    return ["--session", thread] if thread else []       # This is the conversation so far
 
 
 def model_interface():                                   # model interface: a provider it knows by name, with the
@@ -344,22 +309,21 @@ def control_flow():                                      # control flow: one req
     return ["run"]
 
 
-def command(session, message):                           # the one-liner, from its five parts. PWD, because that is
+def command(thread, message):                            # the one-liner, from its five parts. PWD, because that is
     model, env = model_interface()                       # where it takes its working folder from
-    return [TOOLS / "node_modules/.bin/opencode", *control_flow(), *context(session), *model, *output(),
+    return [TOOLS / "node_modules/.bin/opencode", *control_flow(), *context(thread), *model, *output(),
             *as_input(message)], {**env, "PWD": os.getcwd()}
 
 
-def handle(line):                                        # output: one line it printed, as the events of the request
+def handle(line):                                        # output: one line it printed, as events
     part = line.get("part") or {}
-    if line.get("sessionID"):
-        yield {"type": "session", "id": line["sessionID"]}
+    if line["type"] == "step_start":                     # its id is on every line: once a step is enough
+        yield {"type": "thread", "id": line["sessionID"]}
     if line["type"] == "text":
         yield {"type": "text", "text": part["text"]}
     if line["type"] == "tool_use":
         given = part["state"].get("input") or {}
-        yield {"type": "step", "text": f"$ {given['command']}" if "command" in given
-               else f"{part['tool']} {given.get('filePath', '')}"}
+        yield {"type": "step", "text": given.get("command") or given.get("filePath") or part["tool"]}
     if line["type"] == "error":
         yield {"type": "error", "text": line["error"].get("data", {}).get("message") or line["error"].get("name")}
 ```
@@ -373,8 +337,8 @@ echo '{"message": "Create notes.txt containing the word PELICAN."}' | python3 ag
 ```
 
 ```json
-{"type": "session", "id": "01a20b24-…"}
-{"type": "step", "text": "edit /…/notes.txt"}
+{"type": "thread", "id": "01a20b3c-…"}
+{"type": "step", "text": "/…/notes.txt"}
 {"type": "text", "text": "Created `notes.txt` containing `PELICAN`."}
 ```
 
@@ -382,92 +346,83 @@ Put `agent-claude-code.py` or `agent-opencode.py` in that command, and the reque
 
 ### One schema
 
-That sameness is the unified JSON. One request goes in and four kinds of event come out, and each harness meets
-them in its own way. The five functions do the first two rows, and `handle` does the rest:
+That sameness is the unified JSON: one request in, four kinds of event out, one JSON object a line. Each
+harness meets it in its own way. The five functions do the first two rows, and `handle` does the rest:
 
-| | Claude Code | Codex | OpenCode |
-|---|---|---|---|
-| `message`, in | The prompt argument | The prompt argument | The prompt argument |
-| `session`, in | `--resume <id>` | `exec resume <id>` | `--session <id>` |
-| `session`, out | `session_id` on its first line | `thread_id` on its `thread.started` line | `sessionID` on every line |
-| `text`, out | A `text` block of an `assistant` line | An `agent_message` item | A `text` line |
-| `step`, out | A `tool_use` block of an `assistant` line | A `command_execution` or `file_change` item | A `tool_use` line |
-| `error`, out | A `result` line with `is_error` | A `turn.failed` line | An `error` line |
+| | Is | Claude Code | Codex | OpenCode |
+|---|---|---|---|---|
+| `message`, in | What the person said | The prompt argument | The prompt argument | The prompt argument |
+| `thread`, in | Where to carry on from | `--resume <id>` | `exec resume <id>` | `--session <id>` |
+| `thread`, out | The harness's own id for the conversation | `session_id` on its first line | `thread_id` on its `thread.started` line | `sessionID` on every line |
+| `text`, out | Something it said | A `text` block of an `assistant` line | An `agent_message` item | A `text` line |
+| `step`, out | Something it did | A `tool_use` block of an `assistant` line | A `command_execution` or `file_change` item | A `tool_use` line |
+| `error`, out | Why it failed | A `result` line with `is_error` | A `turn.failed` line | An `error` line |
 
 ### The agent
 
-An agent that can change its harness needs one more field in the request, and nothing else:
+An agent that can change its harness needs one more field, and a session of its own:
 
 ```json
 {"harness": "codex", "session": "…", "message": "…"}
 ```
 
-Here `session` is the agent's: one conversation, whatever harnesses answer in it. The events are the same four,
-with `done` at the end.
-
-For the change to go unseen, that session cannot belong to a harness. It is three things the agent keeps:
+A thread belongs to one harness. A session belongs to none, so that the harness can change unseen. It is three
+things the agent keeps:
 
 | | |
 |---|---|
-| **Mind** | The home folder. Each harness keeps its own memory there, side by side, and is carried on by its own id |
+| **Mind** | The home folder. Each harness keeps its own memory there, side by side, and is carried on by its own thread |
 | **Work** | The working folder. Every harness shares it |
 | **What was said** | Kept by the agent. A harness that was not the one answering is given the turns it missed, with the next message |
 
-[agent.py](agent.py) is that agent, whole. It has a chat console, and for each message it starts the program
-the request names. A fourth harness is a fourth file:
+[agent.py](agent.py) is that agent, whole. For each message it runs the program the request names. A fourth
+harness is a fourth file:
 
 ```python
 #!/usr/bin/env python3
-"""agent.py: a chat agent that can change the harness behind it. One console, a harness to pick for each message.
+"""agent.py: a chat agent that can change the harness behind it. One page, a harness to pick for each message.
 
     python3 agent.py                    # on this machine
     python3 agent.py --sandbox          # every turn in a container that is thrown away
 
 A turn is one request: {"harness": "codex", "session": "…", "message": "…"}. The harness names a program beside
-this file, agent-<harness>.py, and every such program takes the same request and prints the same events. So the
-agent starts whichever one is named, and keeps what must outlive any of them: the session.
-
-What the agent needs is in the folder agent/: who it is, its page, and what it keeps. Standard library only.
+this file, agent-<harness>.py. The agent runs it, and keeps what must outlive any harness: the session.
 """
-import itertools
 import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import sys
-import uuid
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PROGRAMS = {path.stem.removeprefix("agent-"): path for path in sorted(HERE.glob("agent-*.py"))}    # harness: program
-SANDBOX = "--sandbox" in sys.argv
-DATA = HERE / "agent" / "data" / ("sandbox" if SANDBOX else "host")
-KEY = "DEEPSEEK_API_KEY"                                 # the provider's key: all of this machine a sandbox is given
+DATA = HERE / "agent" / "data"
 BOX = ["docker", "run", "--rm", "-i", "--init", "--cpus=2", "--memory=4g", "--pids-limit=512", "--read-only",
        "--tmpfs=/tmp:rw,exec,size=1g", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user=10000:10000"]
-running = {}                                             # by session: the program, while a turn is in progress
 
 
-def start(program, mind, work, log):
-    """Start a harness program on a session's two folders. Here, that is this machine. With --sandbox it is a
-    container that sees the program, those folders, and the harnesses installed for it, and nothing else."""
-    pipes = {"stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": log}
-    if not SANDBOX:
-        return subprocess.Popen([sys.executable, program], cwd=work,
-                                env={**os.environ, "HOME": str(mind), "TOOLS": str(DATA / "tools")}, **pipes)
-    seen = {program: f"/{program.name}:ro", work: "/work", mind: "/mind", DATA / "tools": "/tools"}
-    return subprocess.Popen([*BOX, *(f"--volume={path}:{where}" for path, where in seen.items()), "--workdir=/work",
-                             "--env=HOME=/mind", "--env=TOOLS=/tools", "--env=npm_config_cache=/tmp/npm",
-                             f"--env={KEY}", "node:22", "python3", f"/{program.name}"], **pipes)
+def run(program, mind, work, request):
+    """Run a harness program on a session's two folders, and give back the events it printed. Here, that is
+    this machine. With --sandbox it is a container that sees the program, its tools, and those two folders."""
+    command, env, cwd = [sys.executable, program], {**os.environ, "HOME": str(mind)}, work
+    if "--sandbox" in sys.argv:
+        seen = {program: f"/app/{program.name}:ro", DATA / "tools": "/app/agent/data/tools", work: "/work",
+                mind: "/mind"}
+        command = [*BOX, *(f"--volume={path}:{where}" for path, where in seen.items()), "--workdir=/work",
+                   "--env=HOME=/mind", "--env=npm_config_cache=/tmp/npm", "--env=DEEPSEEK_API_KEY", "node:22",
+                   "python3", f"/app/{program.name}"]
+        env, cwd = os.environ, None
+    printed = subprocess.run(command, cwd=cwd, env=env, input=json.dumps(request), stdout=subprocess.PIPE, text=True)
+    return [json.loads(line) for line in printed.stdout.splitlines()]
 
 
 def turn(harness, session, message):
-    """One turn of a session on one harness, as the events the page shows. A session belongs to no harness: it is
-    a mind (the home folder, where each harness keeps its own memory), a work folder they share, and what was
-    said. A harness that was not the one answering is told what it missed, so the person never sees the change."""
+    """One turn of a session on one harness. A session belongs to no harness: it is a mind (the home folder,
+    where each harness keeps its own memory), a work folder they share, and what was said. A harness that was
+    not the one answering is told what it missed, so the person never sees the change."""
     folder = DATA / "sessions" / session
     mind, work, record = folder / "mind", folder / "work", folder / "session.json"
     if not folder.exists():
@@ -475,206 +430,74 @@ def turn(harness, session, message):
             each.mkdir(parents=True, exist_ok=True)
             each.chmod(0o777)                            # the sandbox's user is not this one
         shutil.copy(HERE / "agent" / "AGENTS.md", work)  # who the agent is: every harness reads it unasked
-    kept = json.loads(record.read_text()) if record.exists() else {"title": message[:60], "turns": [], "ids": {}}
-    mine = kept["ids"].setdefault(harness, {"id": None, "seen": 0})
+    kept = json.loads(record.read_text()) if record.exists() else {"turns": [], "threads": {}}
+    mine = kept["threads"].setdefault(harness, {"id": None, "seen": 0})
     missed = "".join(f"{each['role']}: {each['text']}\n\n" for each in kept["turns"][mine["seen"]:])
     asked = message if not missed else ("Here is what was said in this conversation since you last replied. Carry on "
                                         f"from it as the assistant.\n\n{missed}user: {message}")
-    said, steps = [], []
-    with open(folder / "log.txt", "ab") as log:
-        program = running[session] = start(PROGRAMS[harness], mind, work, log)
-        program.stdin.write(json.dumps({"message": asked, "session": mine["id"]}).encode())
-        program.stdin.close()
-        for event in map(json.loads, program.stdout):
-            if event["type"] == "session":
-                mine["id"] = event["id"]                 # the harness's own id for it: how it is continued
-                continue
-            (said if event["type"] == "text" else steps).append(event["text"])
-            yield event
-        ok = program.wait() == 0
-    del running[session]
-    kept["turns"] += [{"role": "user", "text": message},
-                      {"role": "assistant", "text": "\n\n".join(said), "steps": steps, "harness": harness}]
+    events = run(PROGRAMS[harness], mind, work, {"message": asked, "thread": mine["id"]})
+    mine["id"] = next((event["id"] for event in events if event["type"] == "thread"), mine["id"])
+    events = [event for event in events if event["type"] != "thread"]        # the thread is the harness's, kept here
+    said = "\n\n".join(event["text"] for event in events if event["type"] == "text")
+    kept["turns"] += [{"role": "user", "text": message}, {"role": "assistant", "text": said}]
     mine["seen"] = len(kept["turns"])
     record.write_text(json.dumps(kept))
-    yield {"type": "done", "ok": ok}
+    return events
 
 
 class Console(BaseHTTPRequestHandler):
     def do_GET(self):
-        record = DATA / "sessions" / self.path.rpartition("/")[2] / "session.json"
-        if self.path == "/":
-            self.reply("text/html; charset=utf-8", (HERE / "agent" / "console.html").read_bytes())
-        elif self.path == "/sessions":
-            records = sorted((DATA / "sessions").glob("*/session.json"), key=os.path.getmtime, reverse=True)
-            self.reply("application/json", json.dumps({"harnesses": list(PROGRAMS), "sessions": [
-                {"id": each.parent.name, "title": json.loads(each.read_text())["title"]}
-                for each in records]}).encode())
-        elif re.fullmatch(r"/sessions/[0-9a-f]{32}", self.path) and record.exists():
-            self.reply("application/json", record.read_bytes())
-        else:
-            self.send_error(404)
+        options = "".join(f"<option>{name}" for name in PROGRAMS)
+        self.reply("text/html; charset=utf-8",
+                   (HERE / "agent" / "console.html").read_text().replace("<!--harnesses-->", options))
 
     def do_POST(self):                                   # taken only as application/json, which another site's page
         if self.headers.get("Content-Type") != "application/json":             # cannot send unasked
             return self.send_error(400, "send application/json")
         asked = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        session = asked.get("session") or uuid.uuid4().hex
-        if not re.fullmatch(r"[0-9a-f]{32}", session):
-            return self.send_error(400, "that is not a session")
-        if self.path == "/stop":                         # stopped from outside: the session is kept
-            if session in running:
-                running[session].send_signal(signal.SIGTERM)
-            return self.reply("application/json", b"{}")
-        if asked.get("harness") not in PROGRAMS or not asked.get("message"):
+        if (asked.get("harness") not in PROGRAMS or not asked.get("message")
+                or not re.fullmatch(r"[0-9a-f]{32}", str(asked.get("session")))):
             return self.send_error(400, "a turn is a harness, a session, and a message")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/x-ndjson")
-        self.end_headers()
-        events, here = turn(asked["harness"], session, asked["message"]), True
-        for event in itertools.chain([{"type": "session", "id": session}], events):
-            try:
-                if here:
-                    self.wfile.write(json.dumps(event).encode() + b"\n")
-                    self.wfile.flush()
-            except BrokenPipeError:                      # the page went away: the turn is stopped, and still kept
-                here = False
-                running[session].send_signal(signal.SIGTERM)
+        events = turn(asked["harness"], asked["session"], asked["message"])
+        self.reply("application/x-ndjson", "".join(json.dumps(event) + "\n" for event in events))
 
-    def reply(self, kind, data):
+    def reply(self, kind, text):
         self.send_response(200)
         self.send_header("Content-Type", kind)
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(len(text.encode())))
         self.end_headers()
-        self.wfile.write(data)
-
-    def log_message(self, *_):
-        pass
+        self.wfile.write(text.encode())
 
 
 if __name__ == "__main__":
-    (DATA / "sessions").mkdir(parents=True, exist_ok=True)
-    where = "in a sandbox" if SANDBOX else "on this machine"
-    print(f"the console is on http://127.0.0.1:8500/: {', '.join(PROGRAMS)}, {where}", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", 8500), Console).serve_forever()
+    print(f"the agent is on http://127.0.0.1:8500/, with {', '.join(PROGRAMS)} behind it", flush=True)
+    HTTPServer(("127.0.0.1", 8500), Console).serve_forever()
 ```
 
-What the agent needs is in one folder, [agent/](agent): who it is, the `AGENTS.md` above, and its page,
-`console.html`, which sends the request and draws the events:
-
-<details>
-<summary>agent/console.html</summary>
+Its page, [agent/console.html](agent/console.html), sends the request and prints the events:
 
 ```html
 <!doctype html>
-<!-- The chat console: one page. It sends a turn (a harness, a session, a message) and draws the events that come back. -->
-<html lang="en">
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent</title>
-<style>
-  :root { --bg: #fff; --side: #f9f9f9; --ink: #0d0d0d; --muted: #6b6b6b; --line: #e5e5e5; --bubble: #f4f4f4; --bad: #c0362c; color-scheme: light dark; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #212121; --side: #171717; --ink: #ececec; --muted: #a0a0a0; --line: #303030; --bubble: #2f2f2f; --bad: #ff8d83; } }
-  * { box-sizing: border-box; }
-  body { margin: 0; height: 100vh; display: flex; background: var(--bg); color: var(--ink); font: 15px/1.6 system-ui, sans-serif; }
-  aside { width: 260px; background: var(--side); padding: 12px; overflow: auto; flex-shrink: 0; }
-  aside button, aside a { display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; text-decoration: none; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  aside button:hover, aside a:hover, aside a.open { background: var(--line); } aside button { font-weight: 600; margin-bottom: 8px; }
-  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-  #thread { flex: 1; overflow: auto; padding: 24px 16px; } #thread > * { max-width: 760px; margin: 0 auto 18px; }
-  .user { background: var(--bubble); padding: 10px 16px; border-radius: 18px; width: fit-content; max-width: 560px; margin-right: max(0px, calc((100% - 760px) / 2)) !important; margin-left: auto !important; white-space: pre-wrap; }
-  .text { white-space: pre-wrap; word-break: break-word; } .bad { color: var(--bad); } .hello { color: var(--muted); text-align: center; margin-top: 30vh !important; font-size: 22px; }
-  details { color: var(--muted); font-size: 13px; margin-bottom: 6px; } summary { cursor: pointer; } details div { font: 12px/1.6 ui-monospace, monospace; word-break: break-all; padding-left: 14px; }
-  form { max-width: 760px; width: calc(100% - 32px); margin: 0 auto 20px; border: 1px solid var(--line); border-radius: 24px; padding: 10px 12px; display: flex; gap: 8px; align-items: flex-end; box-shadow: 0 2px 8px rgba(0, 0, 0, .06); }
-  textarea { flex: 1; border: 0; outline: 0; resize: none; background: none; color: inherit; font: inherit; height: 28px; max-height: 200px; padding: 2px 6px; }
-  select, form button { font: inherit; color: inherit; background: var(--bubble); border: 0; border-radius: 16px; padding: 6px 12px; cursor: pointer; }
-  form button { background: var(--ink); color: var(--bg); font-weight: 600; }
-</style>
-<aside><button id="new">New chat</button><div id="sessions"></div></aside>
-<main>
-  <div id="thread"></div>
-  <form id="form">
-    <textarea id="message" placeholder="Ask anything" autofocus></textarea>
-    <select id="harness" title="The harness behind the agent"></select>
-    <button id="send">Send</button>
-  </form>
-</main>
+<pre id="log"></pre>
+<form id="form"><select id="harness"><!--harnesses--></select> <input id="message" size="80" autofocus> <button>Send</button></form>
 <script>
-"use strict";
 const $ = id => document.getElementById(id);
-// Every node is made here, and what the agent said is only ever text: none of it becomes markup.
-const el = (tag, cls, text) => { const node = document.createElement(tag); node.className = cls || ""; node.textContent = text || ""; return node; };
-const post = (path, body) => fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-let session = null, busy = false;                     // the session on screen, and whether a turn is in progress
-
-function reply() {                                    // an empty reply, and how to add to it
-  const steps = el("details"), summary = el("summary"), box = el("div");
-  steps.append(summary); steps.hidden = true; box.append(steps); $("thread").append(box);
-  return {
-    step(text) { steps.hidden = false; steps.append(el("div", "", text)); const count = steps.children.length - 1; summary.textContent = `Worked: ${count} step${count > 1 ? "s" : ""}`; },
-    text(text, cls) { box.append(el("div", cls || "text", text)); box.scrollIntoView({ block: "end" }); },
-  };
-}
-
-async function list() {                               // the sessions, and the harnesses to pick from
-  const all = await (await fetch("/sessions")).json();
-  if (!$("harness").options.length) $("harness").append(...all.harnesses.map(name => el("option", "", name)));
-  $("sessions").replaceChildren(...all.sessions.map(each => {
-    const link = el("a", each.id === session ? "open" : "", each.title);
-    link.onclick = () => show(each.id);
-    return link;
-  }));
-}
-
-async function show(id) {                             // a session, as it was kept
-  session = id;
-  $("thread").replaceChildren();
-  if (!id) $("thread").append(el("div", "hello", "What can I help with?"));
-  for (const turn of id ? (await (await fetch(`/sessions/${id}`)).json()).turns : []) {
-    if (turn.role === "user") { $("thread").append(el("div", "user", turn.text)); continue; }
-    const drawn = reply();
-    turn.steps.forEach(drawn.step);
-    drawn.text(turn.text);
-  }
-  list();
-  $("message").focus();
-}
-
+const session = crypto.randomUUID().replaceAll("-", "");        // one conversation. Reload the page for a new one
 $("form").onsubmit = async event => {
   event.preventDefault();
-  if (busy) return post("/stop", { session });        // while a turn runs, the button stops it
-  const message = $("message").value.trim();
-  if (!message) return;
-  if (!session) $("thread").replaceChildren();
-  $("thread").append(el("div", "user", message));
-  $("message").value = ""; busy = true; $("send").textContent = "Stop";
-  const drawn = reply(), decoder = new TextDecoder();
-  const reader = (await post("/turn", { harness: $("harness").value, session, message })).body.getReader();
-  for (let buffer = "";;) {                           // each event is drawn as it arrives
-    const { done, value } = await reader.read();
-    if (done) break;
-    const lines = (buffer + decoder.decode(value, { stream: true })).split("\n");
-    buffer = lines.pop();
-    for (const each of lines.filter(Boolean).map(JSON.parse)) {
-      if (each.type === "session") session = each.id;
-      if (each.type === "step") drawn.step(each.text);
-      if (each.type === "text") drawn.text(each.text);
-      if (each.type === "error") drawn.text(each.text, "text bad");
-      if (each.type === "done" && !each.ok) drawn.text("The turn did not finish.", "text bad");
-    }
+  const turn = {harness: $("harness").value, session, message: $("message").value};
+  $("log").append(`> ${turn.message}\n`);                       // as text: nothing the agent says becomes markup
+  $("message").value = "";
+  const reply = await fetch("/", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(turn)});
+  for (const line of (await reply.text()).trim().split("\n")) {
+    const event = JSON.parse(line);
+    $("log").append(event.type === "step" ? `  - ${event.text}\n` : `${event.text}\n`);
   }
-  busy = false; $("send").textContent = "Send";
-  list();
-  $("message").focus();
 };
-$("message").onkeydown = event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); $("form").requestSubmit(); } };
-$("new").onclick = () => show(null);
-show(null);
 </script>
-</html>
 ```
-
-</details>
 
 ```sh
 python3 agent.py          # then open http://127.0.0.1:8500/
@@ -688,40 +511,41 @@ Run this way, the agent acts without asking, as you, on your machine.
 
 ## A sandbox
 
-The last change is to where a program is started, which is the function `start` in `agent.py`. With
-`--sandbox`, each turn is the same program in a container that is thrown away:
+The last change is to where a program is run, which is the function `run` in `agent.py`. With `--sandbox`, each
+turn is the same program in a container that is thrown away:
 
 ```sh
 docker run --rm -i --init --cpus=2 --memory=4g --pids-limit=512 --read-only --tmpfs=/tmp:rw,exec,size=1g \
   --cap-drop=ALL --security-opt=no-new-privileges --user=10000:10000 \
-  --volume=agent-codex.py:/agent-codex.py:ro --volume=<session>/work:/work --volume=<session>/mind:/mind \
-  --volume=<tools>:/tools --workdir=/work --env=HOME=/mind --env=DEEPSEEK_API_KEY node:22 python3 /agent-codex.py
+  --volume=agent-codex.py:/app/agent-codex.py:ro --volume=agent/data/tools:/app/agent/data/tools \
+  --volume=<session>/work:/work --volume=<session>/mind:/mind --workdir=/work \
+  --env=HOME=/mind --env=DEEPSEEK_API_KEY node:22 python3 /app/agent-codex.py
 ```
 
-It is not root, it cannot change the image it runs in, it is capped, and it sees the program, the session's two
-folders, and the harnesses installed for it. Of this machine's environment it is given one thing, the
-provider's key. Nothing else changed: not the request, not the three programs, not the page.
+It is not root, it cannot change the image it runs in, it is capped, and it sees the program, its tools, and
+the session's two folders. Of this machine's environment it is given one thing, the provider's key. Nothing
+else changed: not the request, not the three programs, not the page.
 
 ```sh
 python3 agent.py --sandbox
 ```
 
 In a browser, in one conversation: Claude Code wrote a haiku into a file, Codex recalled my name and added a
-second, and OpenCode showed the file and counted two. I stopped Claude Code in the middle of a command, and
-Codex, asked next, knew what had been going on.
+second, and OpenCode showed the file and counted two.
 
 ## Where this goes
 
-A chat console, any harness behind the agent, and every turn sandboxed. Each piece has a name on the platform I
+A chat page, any harness behind the agent, and every turn sandboxed. Each piece has a name on the platform I
 built from it, [HarnessGateway](https://github.com/HarnessGateway/harnessgateway):
 
 | Here | There |
 |---|---|
 | `agent-<harness>.py` | A harness package: two programs, `install` and `run` |
-| `agent.py` | The core: it takes the request, starts the package in a sandbox, and keeps the session |
+| `agent.py` | The core: it takes the request, runs the package in a sandbox, and keeps the session |
 | The request and the events | The OpenAI Responses API, unmodified |
 | `harness` | `model`, written as `harness/provider/model` |
-| The agent's `session` | `previous_response_id` |
+| `session` | `previous_response_id` |
+| `thread` | Kept inside the package, where the caller never sees it |
 
 The JSON here is mine, and small: a step is a line of text, and nothing but this page speaks it. Writing it, I
 was inventing a request, an output format, and a way to name a session. OpenAI Responses already has all three,
