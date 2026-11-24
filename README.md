@@ -69,8 +69,8 @@ incomplete, so only what you have run is known.
 
 ### 7. Author the program
 
-Write the program that drives it. JSON in, JSON out: it reads one request, runs the harness with nobody there,
-and prints what happened.
+Write the program that drives it. JSON in, code, JSON out: it reads one request, runs the harness with nobody
+there, and prints what the harness printed, one JSON object a line.
 
 ```json
 {"message": "…", "thread": "…"}
@@ -92,9 +92,9 @@ def control_flow(): ...            # control flow: run once with nobody there, b
 
 ## Worked examples
 
-The framework, applied to three harnesses. Each ends in the one command that runs it with nobody there, what
-that command prints, and the program it becomes. The provider is DeepSeek throughout, because one key serves
-the three APIs these harnesses speak.
+The framework, applied to three harnesses. Each ends in the one command that runs it with nobody there, and
+the program that command becomes: its JSON in, its code, and its JSON out. The provider is DeepSeek throughout,
+because one key serves the three APIs these harnesses speak.
 
 The agent is the same in all three: a general chat agent. It is one file, `AGENTS.md`, because every one of
 them reads that file from its working folder unasked:
@@ -125,20 +125,18 @@ ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic ANTHROPIC_AUTH_TOKEN=$DEEP
   --output-format stream-json --verbose -- "Create notes.txt containing the word PELICAN."
 ```
 
-What it prints, shortened:
-
-```
-{"type":"system","subtype":"init","session_id":"38921473-…","tools":[…]}
-{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/…/notes.txt","content":"PELICAN\n"}}]}}
-{"type":"user","message":{"content":[{"type":"tool_result","content":"File created successfully at: /…/notes.txt"}]}}
-{"type":"assistant","message":{"content":[{"type":"text","text":"Created `/…/notes.txt` containing `PELICAN`."}]}}
-{"type":"result","subtype":"success","is_error":false,"usage":{…}}
-```
-
 Testing found: `--max-turns` is in the documentation and not in the help, and it works. A flag that takes a
 list swallows the prompt after it, hence the `--`.
 
-Its program, [agent-claude-code.py](agent-claude-code.py): the request becomes that command.
+Its program, [agent-claude-code.py](agent-claude-code.py), makes that command of a request.
+
+**JSON in**
+
+```json
+{"message": "Create notes.txt containing the word PELICAN."}
+```
+
+**Code**
 
 ```python
 NAME, PACKAGE = "claude-code", "@anthropic-ai/claude-code@2.1.325"  # its latest stable version, pinned
@@ -174,6 +172,16 @@ def command(thread, message):                            # the one-liner, from i
             *as_input(message)], env
 ```
 
+**JSON out**, as Claude Code prints it, shortened
+
+```
+{"type":"system","subtype":"init","session_id":"38921473-…","tools":[…]}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/…/notes.txt","content":"PELICAN\n"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","content":"File created successfully at: /…/notes.txt"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Created `/…/notes.txt` containing `PELICAN`."}]}}
+{"type":"result","subtype":"success","is_error":false,"usage":{…}}
+```
+
 ### Codex 0.171.0
 
 | Primitive | How it is driven |
@@ -190,19 +198,18 @@ codex exec --skip-git-repo-check -c model_provider=deepseek \
   -m deepseek-flash --dangerously-bypass-approvals-and-sandbox --json -- "Create notes.txt containing the word PELICAN."
 ```
 
-What it prints, shortened:
-
-```
-{"type":"thread.started","thread_id":"01a20b4f-…"}
-{"type":"item.completed","item":{"type":"command_execution","command":"/usr/bin/bash -lc \"printf 'PELICAN\\n' > notes.txt && cat notes.txt\"","exit_code":0}}
-{"type":"item.completed","item":{"type":"agent_message","text":"Created `notes.txt` containing `PELICAN`."}}
-{"type":"turn.completed","usage":{…}}
-```
-
 Testing found: its own sandbox cannot start inside a container, so there it must be bypassed and the
 container is the sandbox. A project's hooks do not run until the project is trusted.
 
-Its program, [agent-codex.py](agent-codex.py): the request becomes that command.
+Its program, [agent-codex.py](agent-codex.py), makes that command of a request.
+
+**JSON in**
+
+```json
+{"message": "Create notes.txt containing the word PELICAN."}
+```
+
+**Code**
 
 ```python
 NAME, PACKAGE = "codex", "@openai/codex@0.171.0"         # its latest stable version, pinned
@@ -238,6 +245,15 @@ def command(thread, message):                            # the one-liner, from i
             *output(), *as_input(message)], env
 ```
 
+**JSON out**, as Codex prints it, shortened
+
+```
+{"type":"thread.started","thread_id":"01a20b4f-…"}
+{"type":"item.completed","item":{"type":"command_execution","command":"/usr/bin/bash -lc \"printf 'PELICAN\\n' > notes.txt && cat notes.txt\"","exit_code":0}}
+{"type":"item.completed","item":{"type":"agent_message","text":"Created `notes.txt` containing `PELICAN`."}}
+{"type":"turn.completed","usage":{…}}
+```
+
 ### OpenCode 1.19.6
 
 | Primitive | How it is driven |
@@ -252,19 +268,19 @@ def command(thread, message):                            # the one-liner, from i
 opencode run -m deepseek/deepseek-flash --auto --format json -- "Create notes.txt containing the word PELICAN."
 ```
 
-What it prints, shortened:
-
-```
-{"type":"step_start","sessionID":"ses_df4b03de…","part":{…}}
-{"type":"tool_use","sessionID":"ses_df4b03de…","part":{"tool":"write","state":{"input":{"filePath":"/…/notes.txt","content":"PELICAN\n"}}}}
-{"type":"text","sessionID":"ses_df4b03de…","part":{"text":"Done."}}
-```
-
 Testing found: it takes its working folder from `$PWD`, not from where it is started. Its documentation site
 leads with a newer major version than the one that installs. A model name it does not know crashes it with
 `e.split is not a function`.
 
-Its program, [agent-opencode.py](agent-opencode.py): the request becomes that command.
+Its program, [agent-opencode.py](agent-opencode.py), makes that command of a request.
+
+**JSON in**
+
+```json
+{"message": "Create notes.txt containing the word PELICAN."}
+```
+
+**Code**
 
 ```python
 NAME, PACKAGE = "opencode", "opencode-ai@1.19.6"         # its latest stable version, pinned
@@ -298,11 +314,19 @@ def command(thread, message):                            # the one-liner, from i
             *as_input(message)], {**env, "PWD": os.getcwd()}
 ```
 
+**JSON out**, as OpenCode prints it, shortened
+
+```
+{"type":"step_start","sessionID":"ses_df4b03de…","part":{…}}
+{"type":"tool_use","sessionID":"ses_df4b03de…","part":{"tool":"write","state":{"input":{"filePath":"/…/notes.txt","content":"PELICAN\n"}}}}
+{"type":"text","sessionID":"ses_df4b03de…","part":{"text":"Done."}}
+```
+
 ## One agent, any harness
 
-The three programs take the same request, because I wrote it. What their harnesses print is three different
-things: look at the three samples above. Nothing put in front of them could read all three. For one agent to
-use any of them, the programs have to print the same thing.
+The three programs take the same JSON in, because I wrote it. Their JSON out is three different things: look
+at the three above. Nothing put in front of them could read all three. For one agent to use any of them, the
+programs have to print the same thing.
 
 ### One schema
 
@@ -413,16 +437,18 @@ echo '{"message": "Create notes.txt containing the word PELICAN."}' | python3 ag
 
 ```json
 {"type": "thread", "id": "01a20b3c-…"}
-{"type": "step", "text": "/…/notes.txt"}
+{"type": "step", "text": "/usr/bin/bash -lc \"printf 'PELICAN\\\\n' > notes.txt && cat notes.txt\""}
 {"type": "text", "text": "Created `notes.txt` containing `PELICAN`."}
 ```
 
 ### The agent
 
-An agent that can change its harness needs one more field, and a session of its own:
+An agent that can change its harness needs one more field, and a session of its own.
+
+**JSON in**
 
 ```json
-{"harness": "codex", "session": "…", "message": "…"}
+{"harness": "codex", "session": "…", "message": "Create notes.txt containing the word PELICAN."}
 ```
 
 A thread belongs to one harness. A session belongs to none, so that the harness can change unseen. It is three
@@ -434,8 +460,10 @@ things the agent keeps:
 | **Work** | The working folder. Every harness shares it |
 | **What was said** | Kept by the agent. A harness that was not the one answering is given the turns it missed, with the next message |
 
-[agent.py](agent.py) is that agent, whole. For each message it runs the program the request names. A fourth
-harness is a fourth file:
+**Code**
+
+[agent.py](agent.py), whole. For each message it runs the program the request names. A fourth harness is a
+fourth file.
 
 ```python
 #!/usr/bin/env python3
@@ -532,6 +560,15 @@ if __name__ == "__main__":
     print(f"the agent is on http://127.0.0.1:8500/, with {', '.join(PROGRAMS)} behind it", flush=True)
     HTTPServer(("127.0.0.1", 8500), Console).serve_forever()
 ```
+
+**JSON out**
+
+```json
+{"type": "step", "text": "/usr/bin/bash -lc \"printf 'PELICAN\\\\n' > notes.txt && cat notes.txt\""}
+{"type": "text", "text": "Created `/work/notes.txt` containing `PELICAN`."}
+```
+
+The same events as any program's, without the thread: that is the harness's, and the agent keeps it.
 
 Its page, [agent/console.html](agent/console.html), sends the request and prints the events:
 
