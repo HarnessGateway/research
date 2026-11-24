@@ -3,19 +3,17 @@
 
     echo '{"message": "Create notes.txt containing the word PELICAN."}' | python3 agent-codex.py
 
-A request is {"message": "…", "session": "…"}. The session is Codex's own id, printed by an earlier turn: give
-it back to carry on from that turn. It works in the folder it is started in, and acts without asking.
+It works in the folder it is started in, and acts without asking.
 """
 import json
 import os
-import signal
 import subprocess
 import sys
 from pathlib import Path
 
 NAME, PACKAGE = "codex", "@openai/codex@0.171.0"         # its latest stable version, pinned
 MODEL = "deepseek-flash"
-TOOLS = Path(os.environ.get("TOOLS") or Path(__file__).resolve().parent / "agent" / "data" / "host" / "tools") / NAME
+TOOLS = Path(__file__).resolve().parent / "agent/data/tools" / f"{NAME}-{sys.platform}"
 PROVIDER = ('model_providers.deepseek={name="DeepSeek",base_url="https://api.deepseek.com/v1",'
             'env_key="DEEPSEEK_API_KEY",wire_api="responses"}')
 
@@ -24,8 +22,8 @@ def as_input(message):                                   # input: the message, a
     return ["--", message]
 
 
-def context(session):                                    # context: AGENTS.md is read from the working folder unasked.
-    return ["resume", session] if session else []        # This is the conversation so far
+def context(thread):                                     # context: AGENTS.md is read from the working folder unasked.
+    return ["resume", thread] if thread else []          # This is the conversation so far
 
 
 def model_interface():                                   # model interface: the provider is a setting, the model a
@@ -40,22 +38,22 @@ def control_flow():                                      # control flow: one req
     return ["exec"]
 
 
-def command(session, message):                           # the one-liner, from its five parts
+def command(thread, message):                            # the one-liner, from its five parts
     model, env = model_interface()
-    return [TOOLS / "node_modules/.bin/codex", *control_flow(), *context(session), "--skip-git-repo-check", *model,
+    return [TOOLS / "node_modules/.bin/codex", *control_flow(), *context(thread), "--skip-git-repo-check", *model,
             *output(), *as_input(message)], env
 
 
-def handle(line):                                        # output: one line it printed, as the events of the request
+def handle(line):                                        # output: one line it printed, as events
     item = line.get("item") or {}
     if line["type"] == "thread.started":
-        yield {"type": "session", "id": line["thread_id"]}
+        yield {"type": "thread", "id": line["thread_id"]}
     if line["type"] == "item.completed" and item["type"] == "agent_message":
         yield {"type": "text", "text": item["text"]}
     if line["type"] == "item.completed" and item["type"] == "command_execution":
-        yield {"type": "step", "text": f"$ {item['command']}"}
+        yield {"type": "step", "text": item["command"]}
     if line["type"] == "item.completed" and item["type"] == "file_change":
-        yield {"type": "step", "text": "edit " + ", ".join(change["path"] for change in item["changes"])}
+        yield {"type": "step", "text": ", ".join(change["path"] for change in item["changes"])}
     if line["type"] == "turn.failed":
         yield {"type": "error", "text": line["error"]["message"]}
 
@@ -66,17 +64,10 @@ if __name__ == "__main__":
                        check=True, stdout=sys.stderr)
         (TOOLS / ".installed").touch()
     request = json.load(sys.stdin)
-    argv, env = command(request.get("session"), request["message"])
+    argv, env = command(request.get("thread"), request["message"])
     harness = subprocess.Popen(argv, env={**os.environ, **env}, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
-    signal.signal(signal.SIGTERM, lambda *_: harness.terminate())      # stopped from outside: it is passed on
-    told = False                                         # its session id is printed once
     for printed in harness.stdout:
-        try:
-            events = list(handle(json.loads(printed)))
-        except ValueError:
-            continue                                     # not a line of JSON
-        for event in events:
-            if event["type"] != "session" or not told:
+        if printed.startswith(b"{"):                     # a line of JSON
+            for event in handle(json.loads(printed)):
                 print(json.dumps(event), flush=True)
-            told = told or event["type"] == "session"
     sys.exit(harness.wait())
