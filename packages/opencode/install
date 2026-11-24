@@ -1,8 +1,0 @@
-#!/bin/sh
-# install: OpenCode at a pinned version, by its makers' own method (npm), under $HG_HARNESS/tools.
-set -eu
-VERSION=1.19.6
-npm install --prefix "$HG_HARNESS/tools" --no-audit --no-fund --loglevel=error --ignore-scripts "opencode-ai@$VERSION"
-node "$HG_HARNESS/tools/node_modules/opencode-ai/postinstall.mjs"      # puts this machine's binary in place
-got=$("$HG_HARNESS/tools/node_modules/.bin/opencode" --version)
-[ "$got" = "$VERSION" ] || { echo "installed OpenCode $got, and $VERSION was wanted" >&2; exit 1; }

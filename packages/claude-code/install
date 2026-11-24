@@ -1,9 +1,0 @@
-#!/bin/sh
-# install: Claude Code at a pinned version, by its makers' own method (npm), under $HG_HARNESS/tools.
-set -eu
-VERSION=2.1.330
-npm install --prefix "$HG_HARNESS/tools" --no-audit --no-fund --loglevel=error --ignore-scripts \
-  "@anthropic-ai/claude-code@$VERSION"
-node "$HG_HARNESS/tools/node_modules/@anthropic-ai/claude-code/install.cjs"      # puts this machine's binary in place
-got=$("$HG_HARNESS/tools/node_modules/.bin/claude" --version | cut -d' ' -f1)
-[ "$got" = "$VERSION" ] || { echo "installed Claude Code $got, and $VERSION was wanted" >&2; exit 1; }
