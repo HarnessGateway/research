@@ -42,10 +42,14 @@ def command(thread, message):                            # the one-liner, from i
             *as_input(message)], {**env, "PWD": os.getcwd()}
 
 
+THREAD = []                                              # its id is on every line: it is said once
+
+
 def handle(line):                                        # output: one line it printed, as events
     part = line.get("part") or {}
-    if line["type"] == "step_start":                     # its id is on every line: once a step is enough
-        yield {"type": "thread", "id": line["sessionID"]}
+    if line.get("sessionID") and not THREAD:
+        THREAD.append(line["sessionID"])
+        yield {"type": "thread", "id": THREAD[0]}
     if line["type"] == "text":
         yield {"type": "text", "text": part["text"]}
     if line["type"] == "tool_use":
