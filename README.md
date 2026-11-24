@@ -69,8 +69,9 @@ incomplete, so only what you have run is known.
 
 ### 7. Author the program
 
-Write the program that drives it. JSON in, code, JSON out: it reads one request, runs the harness with nobody
-there, and prints what the harness printed, one JSON object a line.
+Write the program that drives it. I like to call it a harness package: its goal is to install and run a
+harness CLI. JSON in, code, JSON out: it reads one request, runs the harness with nobody there, and prints what
+the harness printed, one JSON object a line.
 
 ```json
 {"message": "…", "thread": "…"}
