@@ -183,6 +183,22 @@ def command(thread, message):                            # the one-liner, from i
 {"type":"result","subtype":"success","is_error":false,"usage":{…}}
 ```
 
+To follow up, give its id back as `thread`.
+
+**JSON in**
+
+```json
+{"message": "Which word did you put in notes.txt? One word.", "thread": "38921473-…"}
+```
+
+**JSON out**
+
+```
+{"type":"system","subtype":"init","session_id":"38921473-…","tools":[…]}
+{"type":"assistant","message":{"content":[{"type":"text","text":"PELICAN"}]}}
+{"type":"result","subtype":"success","is_error":false,"usage":{…}}
+```
+
 ### Codex 0.171.0
 
 | Primitive | How it is driven |
@@ -255,6 +271,22 @@ def command(thread, message):                            # the one-liner, from i
 {"type":"turn.completed","usage":{…}}
 ```
 
+To follow up, give its id back as `thread`.
+
+**JSON in**
+
+```json
+{"message": "Which word did you put in notes.txt? One word.", "thread": "01a20b4f-…"}
+```
+
+**JSON out**
+
+```
+{"type":"thread.started","thread_id":"01a20b4f-…"}
+{"type":"item.completed","item":{"type":"agent_message","text":"PELICAN"}}
+{"type":"turn.completed","usage":{…}}
+```
+
 ### OpenCode 1.19.6
 
 | Primitive | How it is driven |
@@ -321,6 +353,21 @@ def command(thread, message):                            # the one-liner, from i
 {"type":"step_start","sessionID":"ses_df4b03de…","part":{…}}
 {"type":"tool_use","sessionID":"ses_df4b03de…","part":{"tool":"write","state":{"input":{"filePath":"/…/notes.txt","content":"PELICAN\n"}}}}
 {"type":"text","sessionID":"ses_df4b03de…","part":{"text":"Done."}}
+```
+
+To follow up, give its id back as `thread`.
+
+**JSON in**
+
+```json
+{"message": "Which word did you put in notes.txt? One word.", "thread": "ses_df4b03de…"}
+```
+
+**JSON out**
+
+```
+{"type":"step_start","sessionID":"ses_df4b03de…","part":{…}}
+{"type":"text","sessionID":"ses_df4b03de…","part":{"text":"PELICAN"}}
 ```
 
 ## One agent, any harness
@@ -392,10 +439,14 @@ def handle(line):                                        # output: one line it p
 OpenCode's:
 
 ```python
+THREAD = []                                              # its id is on every line: it is said once
+
+
 def handle(line):                                        # output: one line it printed, as events
     part = line.get("part") or {}
-    if line["type"] == "step_start":                     # its id is on every line: once a step is enough
-        yield {"type": "thread", "id": line["sessionID"]}
+    if line.get("sessionID") and not THREAD:
+        THREAD.append(line["sessionID"])
+        yield {"type": "thread", "id": THREAD[0]}
     if line["type"] == "text":
         yield {"type": "text", "text": part["text"]}
     if line["type"] == "tool_use":
@@ -571,6 +622,23 @@ if __name__ == "__main__":
 
 The same events as any program's, without the thread: that is the harness's, and the agent keeps it.
 
+To follow up, send the same `session`. The harness can be another one.
+
+**JSON in**
+
+```json
+{"harness": "claude-code", "session": "…", "message": "Which word did you put in notes.txt? One word."}
+```
+
+**JSON out**
+
+```json
+{"type": "text", "text": "PELICAN"}
+```
+
+Claude Code had not been in this conversation. The agent gave it the turn it missed, and it answered as the one
+agent. The person only chooses what is behind it.
+
 Its page, [agent/console.html](agent/console.html), sends the request and prints the events:
 
 ```html
@@ -599,10 +667,6 @@ $("form").onsubmit = async event => {
 ```sh
 python3 agent.py          # then open http://127.0.0.1:8500/
 ```
-
-I told Claude Code my name and had it write a file. Codex, asked next, knew my name and added a line. OpenCode
-showed the file, and asked who wrote the second line, said it had. The person sees one agent, and only chooses
-what is behind it.
 
 Run this way, the agent acts without asking, as you, on your machine.
 
