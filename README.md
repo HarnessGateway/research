@@ -70,23 +70,33 @@ only what you have run is known.
 
 ### 7. Author the program
 
-Write the program that drives it. It takes a request and does five things, one for each primitive:
+Write the program that drives it. It takes one request, runs the harness with nobody there, and prints what
+happened, in shapes that do not depend on the harness:
 
-```python
-def as_input(request): ...         # input: the request, in the form the harness takes it
-def context(session): ...          # context: instructions, skills, and the session to continue
-def model_interface(): ...         # model interface: endpoint, model, and reasoning
-def output(): ...                  # output: what it may act with, and every step as a line the program reads
-def turn(request, session): ...    # control flow: start it with nobody there, feed it, read it, and stop it
+```
+in     {"message": "…", "session": "…"}
+out    {"type": "session", "id": "…"}       the harness's own id for the conversation: give it back to carry on
+       {"type": "step", "text": "…"}        something it did
+       {"type": "text", "text": "…"}        something it said
+       {"type": "error", "text": "…"}       why it failed
 ```
 
-What makes it this agent and not another lives beside the program, as files: its instructions, its skills, and
-its settings.
+Inside, it is five functions, one for each primitive, and a sixth that reads the harness's own output:
+
+```python
+def as_input(message): ...         # input: the message, in the form the harness takes it
+def context(session): ...          # context: what it should know, and the conversation to carry on from
+def model_interface(): ...         # model interface: endpoint, model, and reasoning
+def output(): ...                  # output: what it may act with, and every step as a line the program reads
+def control_flow(): ...            # control flow: run once with nobody there, bounded, and exit
+def handle(line): ...              # one line the harness printed, as the events above
+```
 
 ## Worked examples
 
-The framework, applied to three harnesses. Each ends in the one command that runs it with nobody there.
-The provider is DeepSeek throughout, because one key serves the three APIs these harnesses speak.
+The framework, applied to three harnesses. Each ends in the one command that runs it with nobody there, and
+the program that command becomes. The provider is DeepSeek throughout, because one key serves the three APIs
+these harnesses speak.
 
 The agent is the same in all three: a general chat agent. It is one file, `AGENTS.md`, because every one of
 them reads that file from its working folder unasked:
@@ -121,6 +131,37 @@ Testing found: `--max-turns` is in the documentation and not in the help, and it
 list swallows the prompt after it, hence the `--`. A continued session ignores new instructions until
 `--system-prompt-snapshot off`.
 
+Its program, [agent-claude-code.py](agent-claude-code.py), is that one-liner as five functions:
+
+```python
+def as_input(message):                                   # input: the message, as the prompt argument
+    return ["--", message]
+
+
+def context(session):                                    # context: AGENTS.md is read from the working folder unasked.
+    return ["--resume", session] if session else []      # This is the conversation so far
+
+
+def model_interface():                                   # model interface: the model is a flag, the endpoint and key
+    return ["--model", MODEL], {                         # are in the environment
+        "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": os.environ["DEEPSEEK_API_KEY"]}
+
+
+def output():                                            # output: act without asking, and print every step as JSON
+    return ["--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
+
+
+def control_flow():                                      # control flow: one request, at most 50 turns, then exit
+    return ["-p", "--max-turns", "50"]
+
+
+def command(session, message):                           # the one-liner, from its five parts
+    model, env = model_interface()
+    return [TOOLS / "node_modules/.bin/claude", *control_flow(), *context(session), *model, *output(),
+            *as_input(message)], env
+```
+
 ### Codex 0.171.0
 
 | Primitive | How it is driven |
@@ -141,6 +182,35 @@ Testing found: its own sandbox cannot start inside a container, so there it must
 container is the sandbox. Instructions given on a continued session are dropped without a word. A project's
 hooks do not run until the project is trusted.
 
+Its program, [agent-codex.py](agent-codex.py), is that one-liner as five functions:
+
+```python
+def as_input(message):                                   # input: the message, as the prompt argument
+    return ["--", message]
+
+
+def context(session):                                    # context: AGENTS.md is read from the working folder unasked.
+    return ["resume", session] if session else []        # This is the conversation so far
+
+
+def model_interface():                                   # model interface: the provider is a setting, the model a
+    return ["-c", "model_provider=deepseek", "-c", PROVIDER, "-m", MODEL], {}      # flag, the key a variable it names
+
+
+def output():                                            # output: act without asking, and print every step as JSON
+    return ["--dangerously-bypass-approvals-and-sandbox", "--json"]
+
+
+def control_flow():                                      # control flow: one request, then exit. It has no bound
+    return ["exec"]
+
+
+def command(session, message):                           # the one-liner, from its five parts
+    model, env = model_interface()
+    return [TOOLS / "node_modules/.bin/codex", *control_flow(), *context(session), "--skip-git-repo-check", *model,
+            *output(), *as_input(message)], env
+```
+
 ### OpenCode 1.19.6
 
 | Primitive | How it is driven |
@@ -159,11 +229,7 @@ Testing found: it takes its working folder from `$PWD`, not from where it is sta
 leads with a newer major version than the one that installs. A model name it does not know crashes it with
 `e.split is not a function`.
 
-## The three agents
-
-Each one-liner, slotted into the program of step 7: [agent-claude-code.py](agent-claude-code.py),
-[agent-codex.py](agent-codex.py), and [agent-opencode.py](agent-opencode.py). Each is under 60 lines. This is
-Codex's:
+Its program, [agent-opencode.py](agent-opencode.py), is that one-liner as five functions:
 
 ```python
 def as_input(message):                                   # input: the message, as the prompt argument
@@ -171,82 +237,86 @@ def as_input(message):                                   # input: the message, a
 
 
 def context(session):                                    # context: AGENTS.md is read from the working folder unasked.
-    return ["resume", session] if session else []        # This is the conversation so far
+    return ["--session", session] if session else []     # This is the conversation so far
 
 
-def model_interface():                                   # model interface: the provider is a setting, the model a
-    return ["-c", "model_provider=deepseek", "-c", PROVIDER, "-m", MODEL], {       # flag, the key a variable
-        "DEEPSEEK_API_KEY": os.environ["DEEPSEEK_API_KEY"]}
+def model_interface():                                   # model interface: a provider it knows by name, with the
+    return ["-m", f"deepseek/{MODEL}"], {}               # model. It finds the key in the environment itself
 
 
 def output():                                            # output: act without asking, and print every step as JSON
-    return ["--dangerously-bypass-approvals-and-sandbox", "--json"]
+    return ["--auto", "--format", "json"]
 
 
-def control_flow():                                      # control flow: one request, then exit. It has no bound
-    return ["exec"]
+def control_flow():                                      # control flow: one request, then exit. A bound is a setting
+    return ["run"]
 
 
-def command(tools, session, message):                    # the one-liner, from its five parts
-    model, env = model_interface()
-    return [f"{tools}/codex", *control_flow(), *context(session), "--skip-git-repo-check", *model, *output(),
-            *as_input(message)], env
+def command(session, message):                           # the one-liner, from its five parts. PWD, because that is
+    model, env = model_interface()                       # where it takes its working folder from
+    return [TOOLS / "node_modules/.bin/opencode", *control_flow(), *context(session), *model, *output(),
+            *as_input(message)], {**env, "PWD": os.getcwd()}
 ```
 
-One more function, `handle`, turns each line the harness prints into what the console shows: words, a step, or
-an error.
+## One agent, any harness
 
-Everything that is the same for every harness exists once, in [console.py](console.py): installing it at its
-pinned version, starting it, stopping it, keeping sessions, and serving the chat page,
-[console.html](console.html).
+Each of the three programs runs by itself, and they cannot be told apart from outside:
 
 ```sh
-python3 agent-codex.py          # then open http://127.0.0.1:8500/
+echo '{"message": "Create notes.txt containing the word PELICAN."}' | python3 agent-codex.py
 ```
 
-Run this way, the agent acts without asking, as you, on your machine.
+```json
+{"type": "session", "id": "01a20b24-…"}
+{"type": "step", "text": "edit /…/notes.txt"}
+{"type": "text", "text": "Created `notes.txt` containing `PELICAN`."}
+```
 
-## One request for any harness
-
-Three programs with the same five functions are one interface. A turn is one request, whatever runs it:
+Put `agent-claude-code.py` or `agent-opencode.py` in that command and the request and the events are the same.
+That is the unified JSON. So an agent that can change its harness needs one more field, and nothing else:
 
 ```json
 {"harness": "codex", "session": "…", "message": "…"}
 ```
 
-What comes back is the same too, one event a line: `session`, `step`, `text`, `error`, `done`.
+[agent.py](agent.py) is that agent. It has a chat console, and for each message it starts the program the
+request names. A fourth harness is a fourth file.
 
-To change harness in the middle of a conversation, the session cannot belong to a harness. It is three things
-the console keeps:
+For the change to go unseen, the session cannot belong to a harness. It is three things the agent keeps:
 
 | | |
 |---|---|
-| **Mind** | The home folder. Each harness keeps its own memory there, side by side, and is continued by its own id |
+| **Mind** | The home folder. Each harness keeps its own memory there, side by side, and is carried on by its own id |
 | **Work** | The working folder. Every harness shares it |
-| **What was said** | Kept by the console. A harness that was not the one answering is given the turns it missed, with the next message |
+| **What was said** | Kept by the agent. A harness that was not the one answering is given the turns it missed, with the next message |
+
+What the agent needs is in one folder, [agent/](agent): who it is, `AGENTS.md`, and its page.
 
 ```sh
-python3 agent.py          # one console, a harness to pick for each message
+python3 agent.py          # then open http://127.0.0.1:8500/
 ```
 
-I told Claude Code my name and had it write a file. Codex, asked next, knew my name and what was in the file.
-OpenCode added a line to it. Asked who had added that line, Claude Code said it had. The person sees one agent,
-and only chooses what is behind it.
+I told Claude Code my name and had it write a file. Codex, asked next, knew my name and added a line. OpenCode
+showed the file, and asked who wrote the second line, said it had. The person sees one agent, and only chooses
+what is behind it.
+
+Run this way, the agent acts without asking, as you, on your machine.
 
 ## A sandbox
 
-The last change is to where a harness is started, which is one function in `console.py`. With `--sandbox`,
-every harness is installed and run in a container that is thrown away:
+The last change is to where a program is started, which is one function in `agent.py`. With `--sandbox`, each
+turn is the same program in a container that is thrown away:
 
 ```sh
 docker run --rm -i --init --cpus=2 --memory=4g --pids-limit=512 --read-only --tmpfs=/tmp:rw,exec,size=1g \
   --cap-drop=ALL --security-opt=no-new-privileges --user=10000:10000 \
-  --volume=<session>/work:/work --volume=<session>/mind:/mind --volume=<tools>:/tools \
-  --workdir=/work --env=HOME=/mind node:22 <the one-liner>
+  --volume=agent-codex.py:/agent-codex.py:ro --volume=<session>/work:/work --volume=<session>/mind:/mind \
+  --volume=<tools>:/tools --workdir=/work --env=HOME=/mind --env=DEEPSEEK_API_KEY node:22 python3 /agent-codex.py
 ```
 
-It is not root, it cannot change the image it runs in, it is capped, and it sees the session's two folders and
-its own tools. Nothing else changed: not the request, not the three programs, not the page.
+It is not root, it cannot change the image it runs in, it is capped, and it sees the program, the session's two
+folders, and the harnesses installed for it. Of this machine's environment it is given one thing, the
+provider's key. Nothing else changed: not the request, not the three programs, not the page.
 
 ```sh
 python3 agent.py --sandbox
