@@ -49,7 +49,7 @@ def turn(harness, session, message):
             each.mkdir(parents=True, exist_ok=True)
             each.chmod(0o777)                            # the sandbox's user is not this one
         shutil.copy(HERE / "agent" / "AGENTS.md", work)  # who the agent is: every harness reads it unasked
-    kept = json.loads(record.read_text()) if record.exists() else {"turns": [], "threads": {}}
+    kept = json.loads(record.read_text()) if record.exists() else {"title": message[:60], "turns": [], "threads": {}}
     mine = kept["threads"].setdefault(harness, {"id": None, "seen": 0})
     missed = "".join(f"{each['role']}: {each['text']}\n\n" for each in kept["turns"][mine["seen"]:])
     asked = message if not missed else ("Here is what was said in this conversation since you last replied. Carry on "
@@ -57,18 +57,29 @@ def turn(harness, session, message):
     events = run(PROGRAMS[harness], mind, work, {"message": asked, "thread": mine["id"]})
     mine["id"] = next((event["id"] for event in events if event["type"] == "thread"), mine["id"])
     events = [event for event in events if event["type"] != "thread"]        # the thread is the harness's, kept here
-    said = "\n\n".join(event["text"] for event in events if event["type"] == "text")
-    kept["turns"] += [{"role": "user", "text": message}, {"role": "assistant", "text": said}]
+    said, steps = ([event["text"] for event in events if event["type"] == kind] for kind in ("text", "step"))
+    kept["turns"] += [{"role": "user", "text": message},
+                      {"role": "assistant", "text": "\n\n".join(said), "steps": steps}]
     mine["seen"] = len(kept["turns"])
     record.write_text(json.dumps(kept))
     return events
 
 
 class Console(BaseHTTPRequestHandler):
-    def do_GET(self):
-        options = "".join(f"<option>{name}" for name in PROGRAMS)
-        self.reply("text/html; charset=utf-8",
-                   (HERE / "agent" / "console.html").read_text().replace("<!--harnesses-->", options))
+    def do_GET(self):                                    # the page, the conversations, or one of them
+        record = DATA / "sessions" / self.path.rpartition("/")[2] / "session.json"
+        if self.path == "/":
+            options = "".join(f"<option>{name}" for name in PROGRAMS)
+            self.reply("text/html; charset=utf-8",
+                       (HERE / "agent" / "console.html").read_text().replace("<!--harnesses-->", options))
+        elif self.path == "/sessions":
+            records = sorted((DATA / "sessions").glob("*/session.json"), key=os.path.getmtime, reverse=True)
+            self.reply("application/json", json.dumps(
+                [{"id": each.parent.name, "title": json.loads(each.read_text())["title"]} for each in records]))
+        elif re.fullmatch(r"/sessions/[0-9a-f]{32}", self.path) and record.exists():
+            self.reply("application/json", record.read_text())
+        else:
+            self.send_error(404)
 
     def do_POST(self):                                   # taken only as application/json, which another site's page
         if self.headers.get("Content-Type") != "application/json":             # cannot send unasked

@@ -569,7 +569,7 @@ def turn(harness, session, message):
             each.mkdir(parents=True, exist_ok=True)
             each.chmod(0o777)                            # the sandbox's user is not this one
         shutil.copy(HERE / "agent" / "AGENTS.md", work)  # who the agent is: every harness reads it unasked
-    kept = json.loads(record.read_text()) if record.exists() else {"turns": [], "threads": {}}
+    kept = json.loads(record.read_text()) if record.exists() else {"title": message[:60], "turns": [], "threads": {}}
     mine = kept["threads"].setdefault(harness, {"id": None, "seen": 0})
     missed = "".join(f"{each['role']}: {each['text']}\n\n" for each in kept["turns"][mine["seen"]:])
     asked = message if not missed else ("Here is what was said in this conversation since you last replied. Carry on "
@@ -577,18 +577,29 @@ def turn(harness, session, message):
     events = run(PROGRAMS[harness], mind, work, {"message": asked, "thread": mine["id"]})
     mine["id"] = next((event["id"] for event in events if event["type"] == "thread"), mine["id"])
     events = [event for event in events if event["type"] != "thread"]        # the thread is the harness's, kept here
-    said = "\n\n".join(event["text"] for event in events if event["type"] == "text")
-    kept["turns"] += [{"role": "user", "text": message}, {"role": "assistant", "text": said}]
+    said, steps = ([event["text"] for event in events if event["type"] == kind] for kind in ("text", "step"))
+    kept["turns"] += [{"role": "user", "text": message},
+                      {"role": "assistant", "text": "\n\n".join(said), "steps": steps}]
     mine["seen"] = len(kept["turns"])
     record.write_text(json.dumps(kept))
     return events
 
 
 class Console(BaseHTTPRequestHandler):
-    def do_GET(self):
-        options = "".join(f"<option>{name}" for name in PROGRAMS)
-        self.reply("text/html; charset=utf-8",
-                   (HERE / "agent" / "console.html").read_text().replace("<!--harnesses-->", options))
+    def do_GET(self):                                    # the page, the conversations, or one of them
+        record = DATA / "sessions" / self.path.rpartition("/")[2] / "session.json"
+        if self.path == "/":
+            options = "".join(f"<option>{name}" for name in PROGRAMS)
+            self.reply("text/html; charset=utf-8",
+                       (HERE / "agent" / "console.html").read_text().replace("<!--harnesses-->", options))
+        elif self.path == "/sessions":
+            records = sorted((DATA / "sessions").glob("*/session.json"), key=os.path.getmtime, reverse=True)
+            self.reply("application/json", json.dumps(
+                [{"id": each.parent.name, "title": json.loads(each.read_text())["title"]} for each in records]))
+        elif re.fullmatch(r"/sessions/[0-9a-f]{32}", self.path) and record.exists():
+            self.reply("application/json", record.read_text())
+        else:
+            self.send_error(404)
 
     def do_POST(self):                                   # taken only as application/json, which another site's page
         if self.headers.get("Content-Type") != "application/json":             # cannot send unasked
@@ -639,30 +650,90 @@ To follow up, send the same `session`. The harness can be another one.
 Claude Code had not been in this conversation. The agent gave it the turn it missed, and it answered as the one
 agent. The person only chooses what is behind it.
 
-Its page, [agent/console.html](agent/console.html), sends the request and prints the events:
+Its page, [agent/console.html](agent/console.html), is a bare chat: the conversations down the side, the
+thread, and a box to type in with a harness to pick. It sends the request and draws the events.
+
+<details>
+<summary>agent/console.html</summary>
 
 ```html
 <!doctype html>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent</title>
-<pre id="log"></pre>
-<form id="form"><select id="harness"><!--harnesses--></select> <input id="message" size="80" autofocus> <button>Send</button></form>
+<style>
+  :root { --bg: #fff; --side: #f9f9f9; --ink: #0d0d0d; --muted: #6b6b6b; --line: #e5e5e5; --bubble: #f4f4f4; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #212121; --side: #171717; --ink: #ececec; --muted: #a0a0a0; --line: #303030; --bubble: #2f2f2f; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: flex; background: var(--bg); color: var(--ink); font: 15px/1.6 system-ui, sans-serif; }
+  aside { width: 260px; background: var(--side); padding: 12px; overflow: auto; flex-shrink: 0; }
+  aside a { display: block; padding: 8px 10px; border-radius: 8px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  aside a:hover, aside a.open { background: var(--line); } #new { font-weight: 600; margin-bottom: 8px; }
+  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #thread { flex: 1; overflow: auto; padding: 24px 16px; } #thread > * { max-width: 760px; margin: 0 auto 18px; }
+  .user { background: var(--bubble); padding: 10px 16px; border-radius: 18px; width: fit-content; max-width: 560px; margin-right: max(0px, calc((100% - 760px) / 2)) !important; margin-left: auto !important; }
+  .user, .text { white-space: pre-wrap; word-break: break-word; } .bad { color: #c0362c; }
+  .muted, details { color: var(--muted); } .hello { text-align: center; margin-top: 30vh !important; font-size: 22px; }
+  details { font-size: 13px; } summary { cursor: pointer; } details div { font: 12px/1.6 ui-monospace, monospace; word-break: break-all; padding-left: 14px; }
+  form { max-width: 760px; width: calc(100% - 32px); margin: 0 auto 20px; border: 1px solid var(--line); border-radius: 24px; padding: 10px 12px; display: flex; gap: 8px; align-items: center; }
+  #message { flex: 1; border: 0; outline: 0; background: none; color: inherit; font: inherit; }
+  select, button { font: inherit; color: inherit; background: var(--bubble); border: 0; border-radius: 16px; padding: 6px 12px; cursor: pointer; }
+  button { background: var(--ink); color: var(--bg); font-weight: 600; }
+</style>
+<aside><a id="new">New chat</a><div id="sessions"></div></aside>
+<main>
+  <div id="thread"></div>
+  <form id="form"><input id="message" placeholder="Ask anything" autocomplete="off" autofocus><select id="harness"><!--harnesses--></select><button>Send</button></form>
+</main>
 <script>
 const $ = id => document.getElementById(id);
-const session = crypto.randomUUID().replaceAll("-", "");        // one conversation. Reload the page for a new one
+const el = (tag, cls, text) => { const node = document.createElement(tag); node.className = cls; node.textContent = text; return node; };   // as text: nothing the agent says becomes markup
+let session;
+
+function reply(events) {                                // a reply: its steps folded away, then what it said
+  const box = el("div", "", ""), steps = events.filter(event => event.type === "step");
+  if (steps.length) {
+    const fold = el("details", "", "");
+    fold.append(el("summary", "", `Worked: ${steps.length} step${steps.length > 1 ? "s" : ""}`), ...steps.map(step => el("div", "", step.text)));
+    box.append(fold);
+  }
+  box.append(...events.filter(event => event.type !== "step").map(event => el("div", event.type === "error" ? "text bad" : "text", event.text)));
+  return box;
+}
+
+async function show(id) {                               // a conversation as it was kept, or a new one
+  session = id || crypto.randomUUID().replaceAll("-", "");
+  $("thread").replaceChildren(...(id ? [] : [el("div", "hello muted", "What can I help with?")]));
+  for (const turn of id ? (await (await fetch(`/sessions/${id}`)).json()).turns : [])
+    $("thread").append(turn.role === "user" ? el("div", "user", turn.text)
+      : reply([...turn.steps.map(text => ({type: "step", text})), {type: "text", text: turn.text}]));
+  $("sessions").replaceChildren(...(await (await fetch("/sessions")).json()).map(each => {
+    const link = el("a", each.id === session ? "open" : "", each.title);
+    link.onclick = () => show(each.id);
+    return link;
+  }));
+  $("message").focus();
+}
+
 $("form").onsubmit = async event => {
   event.preventDefault();
-  const turn = {harness: $("harness").value, session, message: $("message").value};
-  $("log").append(`> ${turn.message}\n`);                       // as text: nothing the agent says becomes markup
+  const turn = {harness: $("harness").value, session, message: $("message").value.trim()};
+  if (!turn.message) return;
+  if ($("thread").querySelector(".hello")) $("thread").replaceChildren();
+  const waiting = el("div", "muted", "Thinking…");
+  $("thread").append(el("div", "user", turn.message), waiting);
   $("message").value = "";
-  const reply = await fetch("/", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(turn)});
-  for (const line of (await reply.text()).trim().split("\n")) {
-    const event = JSON.parse(line);
-    $("log").append(event.type === "step" ? `  - ${event.text}\n` : `${event.text}\n`);
-  }
+  const answer = await fetch("/", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(turn)});
+  waiting.replaceWith(reply((await answer.text()).trim().split("\n").map(JSON.parse)));
+  $("thread").lastChild.scrollIntoView();
+  if (!$("sessions").querySelector(".open")) show(session);   // its first turn: it has a title now
 };
+$("new").onclick = () => show();
+show();
 </script>
 ```
+
+</details>
 
 ```sh
 python3 agent.py          # then open http://127.0.0.1:8500/
