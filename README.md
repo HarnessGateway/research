@@ -199,7 +199,7 @@ To follow up, give its id back as `thread`.
 {"type":"result","subtype":"success","is_error":false,"usage":{…}}
 ```
 
-### Codex 0.171.0
+### Codex 0.172.0
 
 | Primitive | How it is driven |
 |---|---|
@@ -229,7 +229,7 @@ Its program, [agent-codex.py](agent-codex.py), makes that command of a request.
 **Code**
 
 ```python
-NAME, PACKAGE = "codex", "@openai/codex@0.171.0"         # its latest stable version, pinned
+NAME, PACKAGE = "codex", "@openai/codex@0.172.0"         # its latest stable version, pinned
 MODEL = "deepseek-flash"
 TOOLS = Path(__file__).resolve().parent / "agent/data/tools" / f"{NAME}-{sys.platform}"
 PROVIDER = ('model_providers.deepseek={name="DeepSeek",base_url="https://api.deepseek.com/v1",'
@@ -775,13 +775,19 @@ built from it, [HarnessGateway](https://github.com/HarnessGateway/harnessgateway
 | `agent-<harness>.py` | A harness package: two programs, `install` and `run` |
 | `agent.py` | The core: it takes the request, runs the package in a sandbox, and keeps the session |
 | The request and the events | The OpenAI Responses API, unmodified |
-| `harness` | `model`, written as `harness/provider/model` |
+| `--sandbox` | An environment: the image a turn runs on, its limits, and what it may reach and hold |
+| `harness` | One part of `model`, written as `environment/harness/provider/model` |
 | `session` | `previous_response_id` |
+| The turns a harness missed, given to it | Not given. It is told who worked on the session and where each keeps its memory, and reads up by itself |
 | `thread` | Kept inside the package, where the caller never sees it |
 
 The JSON here is mine, and small: a step is a line of text, and nothing but this page speaks it. Writing it, I
 was inventing a request, an output format, and a way to name a session. OpenAI Responses already has all three,
-with an item for everything an agent does, and every client speaks it. That is the one step from this
+with an item for everything an agent does, and every client speaks it. That is the first step from this
 repository to the platform.
+
+The second is the handover. Here the agent repeats what a harness missed. There nothing is repeated: every
+harness of a session shares its mind, so one that takes over is pointed at the memory the others kept, and reads
+it.
 
 The questions never change. Only the implementations do.

@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-NAME, PACKAGE = "codex", "@openai/codex@0.171.0"         # its latest stable version, pinned
+NAME, PACKAGE = "codex", "@openai/codex@0.172.0"         # its latest stable version, pinned
 MODEL = "deepseek-flash"
 TOOLS = Path(__file__).resolve().parent / "agent/data/tools" / f"{NAME}-{sys.platform}"
 PROVIDER = ('model_providers.deepseek={name="DeepSeek",base_url="https://api.deepseek.com/v1",'
