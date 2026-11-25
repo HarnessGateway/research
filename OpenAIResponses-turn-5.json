@@ -1,0 +1,46 @@
+{
+  "model": "sandbox/harness/deepseek/deepseek-flash",
+  "instructions": "Reply with the JSON asked for, and nothing else. Sign off as HERON.",
+  "previous_response_id": "resp_turn_4",
+  "input": "Give me this chat as fields.",
+  "stream": false,
+  "store": true,
+  "metadata": {
+    "chat_id": "c_4417"
+  },
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "this_chat",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "word",
+          "colour",
+          "total",
+          "weather",
+          "sign_off"
+        ],
+        "properties": {
+          "word": {
+            "type": "string"
+          },
+          "colour": {
+            "type": "string"
+          },
+          "total": {
+            "type": "number"
+          },
+          "weather": {
+            "type": "string"
+          },
+          "sign_off": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

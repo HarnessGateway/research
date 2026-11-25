@@ -1,0 +1,34 @@
+{
+  "model": "sandbox/harness/deepseek/deepseek-flash",
+  "instructions": "You are a helpful assistant in a chat. Answer plainly and briefly.",
+  "input": "Create notes.txt containing the word PELICAN, then tell me what the file holds.",
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_weather",
+      "description": "The current weather in a city. It runs in the caller's own code.",
+      "strict": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "reasoning": {
+    "effort": "low",
+    "summary": "auto"
+  },
+  "stream": true,
+  "store": true,
+  "metadata": {
+    "chat_id": "c_4417"
+  }
+}

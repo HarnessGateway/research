@@ -1,0 +1,31 @@
+{
+  "model": "sandbox/harness/deepseek/deepseek-flash",
+  "instructions": "You are a helpful assistant in a chat. Answer plainly and briefly.",
+  "previous_response_id": "resp_turn_2",
+  "input": "What is the weather in Paris right now?",
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_weather",
+      "description": "The current weather in a city. It runs in the caller's own code.",
+      "strict": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "stream": true,
+  "store": true,
+  "metadata": {
+    "chat_id": "c_4417"
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "model": "sandbox/harness/deepseek/deepseek-flash",
+  "instructions": "You are a helpful assistant in a chat. Answer plainly and briefly.",
+  "previous_response_id": "resp_turn_1",
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Which word did you put in notes.txt? What colour is this picture? And add up the amounts in sales.csv with a script, and tell me the total."
+        },
+        {
+          "type": "input_image",
+          "detail": "auto",
+          "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAS0lEQVR42u3PQQkAAAgAsetfWiP4FgYrsKZeS0BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEDgsqnc8OJg6Ln3AAAAAElFTkSuQmCC"
+        },
+        {
+          "type": "input_file",
+          "filename": "sales.csv",
+          "file_data": "data:text/csv;base64,bW9udGgsYW1vdW50CmphbiwxMjAKZmViLDgwCm1hciw1MAo="
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_weather",
+      "description": "The current weather in a city. It runs in the caller's own code.",
+      "strict": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "stream": true,
+  "store": true,
+  "metadata": {
+    "chat_id": "c_4417"
+  }
+}
